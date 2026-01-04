@@ -1,0 +1,72 @@
+openapi: 3.0.3
+info:
+  title: HR Module API
+  version: 1.0.0
+
+paths:
+  /api/hr/interviews:
+    get:
+      operationId: listInterviews
+      summary: Get interview list
+      description: Returns interviews filtered by date range and status
+      parameters:
+        - name: start_date
+          in: query
+          description: Start date (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+        - name: end_date
+          in: query
+          description: End date (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+        - name: status
+          in: query
+          description: Interview status
+          schema:
+            type: string
+            enum: [pending, completed, cancelled]
+        - name: department
+          in: query
+          description: Department name
+          schema:
+            type: string
+
+  /api/hr/employees:
+    get:
+      operationId: listEmployees
+      summary: Search employees
+      parameters:
+        - name: keyword
+          in: query
+          schema:
+            type: string
+        - name: department
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, on_leave, resigned]
+
+  /api/hr/statistics/monthly:
+    get:
+      operationId: getMonthlyStats
+      summary: Get monthly HR statistics
+      parameters:
+        - name: year
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: month
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 12

@@ -1,0 +1,86 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# --- Virtual environment---
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# --- FastAPI / Uvicorn 相關 ---
+# Uvicorn 開發時產生的 log
+uvicorn.log
+*.log
+logs/
+
+# FastAPI 自動產生的 OpenAPI / docs 快取（可有可無）
+openapi.json
+docs/
+redoc/
+
+# --- LangChain 相關 ---
+# LangChain 快取（向量資料庫、記憶、retriever 快取）
+.langchain.db
+.chainlit/
+.chainlit_cache/
+__pycache__/
+.chainlit.db
+
+# LangGraph 檢查點（如果用 persistence）
+.langgraph_checkpoints/
+
+# --- BAML 相關 ---
+# BAML 生成的 Python client（會自動再生，不用 commit）
+baml_client/
+generated/
+baml_generated/
+
+# --- Ollama / 本地 LLM 相關 ---
+models/
+ollama_models/
+.ollama/
+
+# --- 環境變數與機密 ---
+.env
+.env.local
+.env.*       # .env.prod, .env.dev 等
+.env.example  # 如果你有範例檔，可 commit；沒有就忽略
+secrets/
+*.pem
+*.key
+*.crt
+
+# --- Jupyter / 測試筆記本 ---
+*.ipynb_checkpoints
+.ipynb_checkpoints/
+
+# --- 測試與覆蓋率 ---
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+
+# --- IDE / 編輯器 ---
+.idea/               # PyCharm / IntelliJ
+.vscode/             # VS Code（settings.json 可選 commit）
+*.swp
+*.swo
+*~
+
+# --- OS 產生的垃圾檔 ---
+.DS_Store
+Thumbs.db
+
+# --- 其他常見 ---
+*.bak
+*.tmp
+temp/
+tmp/
