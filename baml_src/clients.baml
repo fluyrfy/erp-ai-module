@@ -3,6 +3,7 @@
 
 // Using the new OpenAI Responses API for enhanced formatting
 client DefaultL3LLM {
+<<<<<<< HEAD
   // provider openai
   // options {
   //   base_url env.OLLAMA_BASE_URL
@@ -16,6 +17,21 @@ client DefaultL3LLM {
     api_key env.OPENAI_API_KEY
     temperature 0.1
   }
+=======
+  provider openai
+  options {
+    base_url env.OLLAMA_BASE_URL
+    api_key "ollama" 
+    model "gpt-oss:20b"
+  }
+  //   provider openai
+  // retry_policy Exponential
+  // options {
+  //   model "gpt-4o-mini"
+  //   api_key env.OPENAI_API_KEY
+  //   temperature 0.1
+  // }
+>>>>>>> branch 'develop' of https://github.com/fluyrfy/erp-ai-module.git
 }
 client OllamaGptOss20b {
   provider openai
