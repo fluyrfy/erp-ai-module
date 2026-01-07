@@ -22,7 +22,7 @@ class SwaggerParser:
             resp = await client.get(self.swagger_url)
             resp.raise_for_status()
             self._raw = resp.json()
-        self._catalog = self._parse_to_catalog(self._raw, self._raw)
+        self._catalog = self._parse_to_catalog(self._raw)
 
     def _resolve_ref(self, ref: str, swagger: dict) -> dict:
         """簡單 $ref 解析（支援 #/components/schemas/XXX）"""
@@ -60,7 +60,7 @@ class SwaggerParser:
                             spec.get("parameters", [])
                         ),
                         "request_body": self._parse_request_body(
-                            spec.get("requestBody")
+                            spec.get("requestBody"), swagger
                         ),
                     }
                 )

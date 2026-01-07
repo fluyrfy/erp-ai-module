@@ -8,7 +8,8 @@ function SelectApi(
   api_doc: string,
   module_context: string
 ) -> ApiSelection {
-  client DefaultL3LLM
+  // client DefaultL3LLM
+  client GPT4o
   prompt #"
     You are an API Planner. Your goal is to create an efficient execution plan.
 
@@ -22,18 +23,31 @@ function SelectApi(
     {{ api_doc }}
 
     TASK:
-    1. List ALL APIs needed to answer the question.
-    2. Set depends_on for each API:
-       - If API_B needs data from API_A's response → depends_on: ["API_A"]
-       - If no dependency → depends_on: []
-    3. Set confidence to 0 if no APIs can answer.
+    1. List ALL APIs needed.
+    2. Set depends_on for each API.
+    3. For APIs with dependencies, pre-plan field_mappings:
+       - Look at the dependency's RESPONSE SCHEMA
+       - Specify which field maps to which parameter
+    4. For APIs without dependencies, set field_mappings to [].
 
     EXAMPLE:
     Query: "List employees in Engineering department"
     → Need department_id first, then query employees
     apis: [
-      { api_id: "listDepartments", depends_on: [], reason: "Get department_id" },
-      { api_id: "listEmployees", depends_on: ["listDepartments"], reason: "Filter by department_id" }
+      { 
+        api_id: "listWithTree", 
+        depends_on: [], 
+        field_mappings: [],
+        reason: "Get department ID for Engineering department" 
+      },
+      { 
+        api_id: "list", 
+        depends_on: ["listWithTree"], 
+        field_mappings: [
+          { from_api: "listWithTree", from_field: "data[0].id", to_param: "departmentId" }
+        ],
+        reason: "Query employees by department ID" 
+      }
     ]
 
     {{ ctx.output_format }}
@@ -44,35 +58,25 @@ function SelectApi(
 function GenerateHttpRequest(
   user_query: string,
   api_spec: string,
-  dependency_schemas: string,
   current_date: string
 ) -> HttpRequest {
   client DefaultL3LLM
   prompt #"
     You are an API parameter generator.
 
-    USER QUERY:
-    {{ user_query }}
-
+    USER QUERY: {{ user_query }}
     CURRENT DATE: {{ current_date }}
 
     TARGET API SPECIFICATION:
     {{ api_spec }}
 
-    DEPENDENCY SCHEMAS (field names only, NO values):
-    {{ dependency_schemas }}
-
-
-
-
-    Generate a complete HTTP request to call this API.
-    - If the user query or the target API requires data from previous steps:
-      Look into 'PREVIOUS CALL RESULTS' to find the relevant field names.
-      Map the value logically (e.g., if API_A has 'invoice_id', use it for API_B's 'id' parameter).
-    - Fill path parameters directly in the path (e.g., /users/{id} → /users/123)
-    - Include all necessary query parameters
-    - For date ranges, infer from user query (e.g., "this month" → start/end dates)
-    - Leave body as empty {} for GET/DELETE requests
+    TASK:
+    1. Generate HTTP request based on USER QUERY only.
+    2. Fill path parameters in path (e.g., /users/{id} → /users/123).
+    3. Fill query/body parameters from user query context.
+    4. For date ranges, infer from query (e.g., "this month" → start/end of current month).
+    5. Use "" for body on GET/DELETE.
+    6. DO NOT fill parameters that come from other APIs.
 
     {{ ctx.output_format }}
   "#
@@ -84,7 +88,7 @@ function GenerateSummary(
   api_response: string,
   output_language: string
 ) -> Summary {
-  client DefaultL3LLM
+  client GPT4o
   prompt #"
     You are an ERP assistant that summarizes data.
 

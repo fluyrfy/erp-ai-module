@@ -7,20 +7,21 @@
 class ApiChoice {
   api_id string @description("Unique API identifier from the doc, e.g. 'listDepartments' or 'listEmployees'")
   depends_on string[] @description("List of api_ids that must complete before this one starts. Use [] if none.")
+  field_mappings FieldMapping[] @description("Fields to extract from previous results. Empty if no dependency.")
   confidence float @description("Confidence for this specific API, 0.0-1.0")
   reason string @description("Why this API is needed to answer the question")
 }
 
-class ApiStage {
-  stage_id int
-  apis ApiChoice[] @description("APIs in this stage can be executed in PARALLEL")
-  reason string @description("Why these APIs are grouped in this stage")
-}
+// class ApiStage {
+//   stage_id int
+//   apis ApiChoice[] @description("APIs in this stage can be executed in PARALLEL")
+//   reason string @description("Why these APIs are grouped in this stage")
+// }
 
 // Multi-API Selection Result
 class ApiSelection {
   // stages ApiStage[] @description("List of execution stages. Stages run SEQUENTIALLY. APIs within a stage run in PARALLEL.")
-  apis ApiChoice[] @description("All APIs needed to answer the question, with dependency info")
+  selected_apis ApiChoice[] @description("All APIs needed to answer the question, with dependency info")
   confidence float @description("Confidence that these APIs can answer the question, 0.0-1.0")
   reason string @description("Why these APIs together can answer the question")
 }
@@ -38,7 +39,6 @@ class HttpRequest {
   query_params map<string, string> @description("Query string parameters")
   body string @description("Request body as JSON string or POST/PUT body. Use '{}' for empty string for GET/DELETE")
   headers map<string, string> @description("Additional headers if needed")
-  field_mappings FieldMapping[] @description("Fields to extract from previous results. Empty if no dependency.")
 }
 
 // Generic Summary Output

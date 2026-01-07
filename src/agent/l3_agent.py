@@ -5,10 +5,12 @@ L3 Generic Agent
 import json
 from datetime import date
 from pathlib import Path
+from typing import Any
 
+from baml_client.types import ApiChoice, HttpRequest
 from src.config import config
 from src.agent.errors import AgentError, AgentResult, ErrorCode
-from src.utils.http import execute_http_request, execute_multiple_requests
+from src.utils import get_nested, execute_http_request
 import time
 from src.tracing import save_trace
 
@@ -122,13 +124,11 @@ class L3Agent:
             )
 
         # 整體信心門檻（設低一點，因為有多支 API 互補）
-        if (
-            selection.overall_confidence < config.CONFIDENCE_THRESHOLD
-        ):  # 比原先 0.8 低，鼓勵探索
+        if selection.confidence < config.CONFIDENCE_THRESHOLD:
             return AgentResult.fail(
                 AgentError(
                     code=ErrorCode.LOW_CONFIDENCE,
-                    message=f"整體信心不足（{selection.overall_confidence:.2f}），無法可靠回答",
+                    message=f"Overall lack of confidence（{selection.confidence:.2f}）, unable to provide a reliable answer",
                     details={"reasoning": selection.reasoning},
                 )
             )
@@ -136,7 +136,7 @@ class L3Agent:
         # ─────────────────────────────────────────────────────────
         # Step 2: Generate HTTP Request
         # ─────────────────────────────────────────────────────────
-        api_requests_to_run = []
+        api_requests: dict[str, tuple[ApiChoice, HttpRequest]] = {}
         for idx, api_choice in enumerate(selected_apis):
             single_spec = self.parser.get_api_by_id(api_choice.api_id)
             if not single_spec:
@@ -146,56 +146,84 @@ class L3Agent:
                         message=f"Can't fine API spec: {api_choice.api_id}",
                     )
                 )
-
+            # 生成 http request
+            api_spec = json.dumps(single_spec, ensure_ascii=False)
             try:
                 http_request = b.GenerateHttpRequest(
                     user_query=user_query,
-                    api_spec=json.dumps(single_spec, ensure_ascii=False),
+                    api_spec=api_spec,
                     current_date=str(date.today()),
                 )
-                api_requests_to_run.append((api_choice.api_id, http_request))
-                print(
-                    f"[Step 2] Prepared: {api_choice.api_id} -> {http_request.method} {http_request.path}"
-                )
-                print(f"Params: {http_request.query_params}")
+
+                api_requests[api_choice.api_id] = (api_choice, http_request)
+                print(f"[Step 2] Prepared: {api_choice.api_id}")
+                print(f"         {http_request.method} {http_request.path}")
+                if http_request.query_params:
+                    print(f"         Query: {http_request.query_params}")
+                if http_request.body and http_request.body != "{}":
+                    print(f"         Body: {http_request.body}")
             except Exception as e:
                 return AgentResult.fail(
                     AgentError(
                         code=ErrorCode.UNKNOWN_ERROR,
-                        message=f"第 {idx+1} 支 API 產生請求失敗: {e}",
+                        message=f"GenerateHttpRequest failed for {api_choice.api_id}: {e}",
                     )
                 )
 
         # ─────────────────────────────────────────────────────────
-        # Step 3: Execute HTTP Request(s)
+        # Step 3: Execute HTTP Request(s) in dependency order
         # ─────────────────────────────────────────────────────────
-        all_responses = {}
-        sequential = selection.needs_sequential_execution
-        mode_str = "SEQUENTIAL" if sequential else "PARALLEL"
+        results: dict[str, Any] = {}  # api_id -> response
 
-        print(f"[Step 3] Execution Mode: {mode_str}")
-        print(f"[Step 3] Executing {len(api_requests_to_run)} API request(s)...")
         try:
-            # Using the utility function to handle parallel/sequential logic
-            all_responses = await execute_multiple_requests(
-                base_url=self.base_url,
-                api_requests=api_requests_to_run,
-                sequential=sequential,
-                timeout=config.HTTP_TIMEOUT,
-            )
-        except AgentError as ae:
-            print(f"[Step 3] Execution Error: {ae.message}")
-            return AgentResult.fail(ae)
+            sorted_apis = self._topological_sort(selection.selected_apis)
         except Exception as e:
-            print(f"[Step 3] Unexpected Error: {e}")
             return AgentResult.fail(
                 AgentError(
-                    code=ErrorCode.UNKNOWN_ERROR, message=f"Batch execution failed: {e}"
+                    code=ErrorCode.UNKNOWN_ERROR, message=f"Dependency error: {e}"
                 )
             )
-        print(
-            f"[Step 3] Execution completed. Received {len(all_responses)} response(s)."
-        )
+
+        for api_choice in sorted_apis:
+            _, http_request = api_requests[api_choice.api_id]
+
+            # 套用 field_mappings（從前一個 API 取值塞入）
+            try:
+                final_query_params, final_body = self._apply_field_mappings(
+                    http_request=http_request,
+                    field_mappings=api_choice.field_mappings,
+                    results=results,
+                )
+            except Exception as e:
+                return AgentResult.fail(
+                    AgentError(
+                        code=ErrorCode.UNKNOWN_ERROR,
+                        message=f"Field mapping failed for {api_choice.api_id}: {e}",
+                    )
+                )
+
+            print(f"[Step 3] Executing: {api_choice.api_id}")
+            print(f"         {http_request.method} {http_request.path}")
+            if final_query_params:
+                print(f"         Query: {final_query_params}")
+            if final_body and final_body != "{}":
+                print(f"         Body: {final_body}")
+
+            response, error = await execute_http_request(
+                base_url=self.base_url,
+                method=http_request.method,
+                path=http_request.path,
+                query_params=(
+                    final_query_params if http_request.method == "GET" else None
+                ),
+                body=final_body if http_request.method != "GET" else "",
+            )
+            if error:
+                print(f"[Step 3] Error: {error}")
+                return AgentResult.fail(error)
+
+            results[api_choice.api_id] = response
+            print(f"[Step 3] Success: {api_choice.api_id}")
 
         # ─────────────────────────────────────────────────────────
         # Step 4: Generate Summary
@@ -203,7 +231,7 @@ class L3Agent:
         try:
             summary = b.GenerateSummary(
                 user_query=user_query,
-                api_response=json.dumps(all_responses, ensure_ascii=False),
+                api_response=json.dumps(results, ensure_ascii=False),
                 output_language=self.language,
             )
         except Exception as e:
@@ -221,18 +249,7 @@ class L3Agent:
             )
 
         print(f"[Step 4] Summary: {summary.title}")
-
-        # Format output
-        output = self._format_summary(summary)
-        save_trace(
-            module=self.module_name,
-            user_query=user_query,
-            success=True,
-            result=output,
-            duration_ms=(time.time() - start_time) * 1000,
-            raw_response=response_data,
-        )
-        return AgentResult.ok(output)
+        return AgentResult.ok(self._format_summary(summary))
 
     def _format_summary(self, summary) -> str:
         """Format Summary object for display"""
@@ -253,3 +270,79 @@ class L3Agent:
             lines.append(f"💡 **Recommendation:** {summary.recommendation}")
 
         return "\n".join(lines)
+
+    def _topological_sort(self, apis: list[ApiChoice]) -> list[ApiChoice]:
+        """
+        根據 depends_on 拓撲排序，確保依賴先執行
+
+        Raises:
+            Exception: 發現循環依賴
+        """
+        result = []
+        pending = {api.api_id: api for api in apis}
+        completed = set()
+
+        while pending:
+            # 找出所有依賴都已完成的 API
+            ready = [
+                api
+                for api in pending.values()
+                if all(dep in completed for dep in api.depends_on)
+            ]
+
+            if not ready:
+                remaining = list(pending.keys())
+                raise Exception(f"Circular dependency detected: {remaining}")
+
+            for api in ready:
+                result.append(api)
+                completed.add(api.api_id)
+                del pending[api.api_id]
+
+        return result
+
+    def _apply_field_mappings(
+        self,
+        http_request: HttpRequest,
+        field_mappings: list,
+        results: dict[str, Any],
+    ) -> tuple[dict[str, str], str]:
+        """
+        根據 field_mappings 從前一個 API 的結果取值塞入
+
+        Args:
+            http_request: LLM 生成的 HTTP request
+            field_mappings: 欄位映射列表
+            results: 已執行 API 的結果
+
+        Returns:
+            (final_query_params, final_body)
+        """
+        # 複製原本的參數
+        query_params = (
+            dict(http_request.query_params) if http_request.query_params else {}
+        )
+        body_dict = (
+            json.loads(http_request.body)
+            if http_request.body and http_request.body != "{}"
+            else {}
+        )
+
+        # 套用每個 mapping
+        for mapping in field_mappings:
+            # 從前一個 API 的 response 取值
+            source_response = results.get(mapping.from_api)
+            if source_response is None:
+                raise Exception(f"Dependency not found: {mapping.from_api}")
+
+            value = get_nested(source_response, mapping.from_field)
+
+            # 根據 HTTP method 決定塞到哪裡
+            if http_request.method == "GET":
+                query_params[mapping.to_param] = str(value)
+            else:
+                body_dict[mapping.to_param] = value
+
+        final_body = json.dumps(body_dict, ensure_ascii=False) if body_dict else ""
+
+        return query_params, final_body
