@@ -17,11 +17,12 @@ client<llm> DefaultL3LLM {
     temperature 0.1
   }
 }
+
 client<llm> OllamaGptOss20b {
   provider openai
   options {
     base_url env.OLLAMA_BASE_URL
-    api_key "ollama" 
+    api_key "ollama"
     model "gpt-oss:20b"
   }
 }

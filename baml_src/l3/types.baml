@@ -2,7 +2,15 @@
 // L3 Generic Agent - Type Definitions
 // ═══════════════════════════════════════════════════════════════════
 
-// === Step 1: API Selection ===
+
+// === FetchStrategy ===
+enum FetchStrategy {
+  SINGLE_PAGE @description("Default mode. Use this when finding specific persons, departments, or a small set of records (e.g., 'Find John's email').")
+  ALL_PAGES @description("Aggregation mode. Use this ONLY when the user asks for STATISTICS, TOTAL COUNTS, RANKINGS, or SEARCHING ALL records (e.g., 'How many...', 'Most common...', 'List all...').")
+}
+
+
+// === API Selection ===
 // Single API Choice
 class ApiChoice {
   api_id string @description("Unique API identifier from the doc, e.g. 'listDepartments' or 'listEmployees'")
@@ -27,9 +35,15 @@ class ApiSelection {
 }
 
 // === Step 2: HTTP Request Generation ===
+// class FilterCondition {
+//   field string                // "name"
+//   operator string             // "==" | "!=" | ">" | "<"
+//   value string                // "研發部" (從 user_query 抽取)
+// }
 class FieldMapping {
   from_api string @description("Source API id")
-  from_field string @description("Field path in response, e.g. 'data.items[0].id' or 'department_id'")
+  from_field string @description("Field path in response, e.g. 'data.items[0].id' or 'department_id', use only simple dot notation or array indexing")
+  // filter FilterCondition?
   to_param string @description("Target parameter name in this API")
 }
 // Generic HTTP Request (LLM fills everything)
@@ -39,6 +53,8 @@ class HttpRequest {
   query_params map<string, string> @description("Query string parameters")
   body string @description("Request body as JSON string or POST/PUT body. Use '{}' for empty string for GET/DELETE")
   headers map<string, string> @description("Additional headers if needed")
+  fetch_strategy FetchStrategy @description("Analyze user intent: is this a specific lookup (SINGLE) or a statistical/global query (ALL)?")
+  aggregation_field string? @description("If fetch_strategy is ALL_PAGES and user asks for statistics (e.g. 'most common surname'), specify the field name to count (e.g. 'lastName'). Otherwise null.")
 }
 
 // Generic Summary Output

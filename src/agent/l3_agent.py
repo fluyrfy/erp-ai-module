@@ -2,14 +2,22 @@
 L3 Generic Agent
 """
 
+from collections import Counter
 import json
 from datetime import date
 from pathlib import Path
+import traceback
 from typing import Any
 
-from baml_client.types import ApiChoice, HttpRequest
+from baml_client.types import ApiChoice, FetchStrategy, HttpRequest
 from src.config import config
-from src.agent.errors import AgentError, AgentResult, ErrorCode
+from src.agent.errors import (
+    AgentError,
+    AgentException,
+    AgentResult,
+    ErrorCode,
+    DependencyMissingError,
+)
 from src.utils import get_nested, execute_http_request
 import time
 from src.tracing import save_trace
@@ -17,6 +25,7 @@ from src.tracing import save_trace
 # BAML client (generated)
 from baml_client import b
 from src.swagger_parser import SwaggerParser
+from src.utils.data import extract_value
 
 
 class L3Agent:
@@ -194,36 +203,96 @@ class L3Agent:
                     field_mappings=api_choice.field_mappings,
                     results=results,
                 )
+                http_request.query_params = (
+                    final_query_params if http_request.method == "GET" else {}
+                )
+                http_request.body = final_body if http_request.method != "GET" else ""
+
+                print(f"[Step 3] Strategy: {http_request.fetch_strategy}")
+                print(f"         {http_request.method} {http_request.path}")
+
+                # Execution Strategy
+                response = None
+                error = None
+
+                # 判斷 BAML 決定的策略
+                if http_request.fetch_strategy == FetchStrategy.ALL_PAGES:
+                    # [策略 A] 全量獲取：呼叫自動分頁 Helper
+                    response, error = await self._execute_with_pagination(
+                        http_request, self.base_url
+                    )
+                else:
+                    # [策略 B] 單次獲取：原有的邏輯
+                    response, error = await execute_http_request(
+                        base_url=self.base_url,
+                        method=http_request.method,
+                        path=http_request.path,
+                        query_params=http_request.query_params,
+                        body=http_request.body,
+                    )
+                if error:
+                    results[api_choice.api_id] = {
+                        "status": "error",
+                        "code": "HTTP_ERROR",
+                        "message": str(error),
+                    }
+                    continue
+
+                # 檢查 BAML 是否指定了聚合欄位 (例如 "lastName")
+                agg_field = getattr(http_request, "aggregation_field", None)
+
+                # 只有在成功取得資料 且 有指定聚合欄位時才執行
+                if response and agg_field:
+                    records = response.get("data", {}).get("records", [])
+
+                    if records:
+                        print(
+                            f"🧮 [MapReduce] Aggregating data by field: '{agg_field}'..."
+                        )
+
+                        # Python 統計邏輯：取出欄位 -> 計數
+                        values = [str(r.get(agg_field, "Unknown")) for r in records]
+                        counts = dict(Counter(values))
+
+                        # 排序：數量多的排前面，方便 Summary 閱讀
+                        sorted_counts = dict(
+                            sorted(
+                                counts.items(), key=lambda item: item[1], reverse=True
+                            )
+                        )
+
+                        print(
+                            f"   -> Reduced {len(records)} raw records into {len(sorted_counts)} stats categories."
+                        )
+
+                        # 篡改 Response，只保留統計結果，丟棄原始資料以節省 Token
+                        response["data"]["records"] = []  # 清空原始資料
+                        response["data"]["statistics"] = sorted_counts  # 注入統計結果
+                        response["data"][
+                            "note"
+                        ] = f"Raw data aggregated by Python using field '{agg_field}'."
+
+                # 儲存最終結果 (可能是原始資料，也可能是統計後的資料)
+                results[api_choice.api_id] = response
+                print(f"✅ Success: {api_choice.api_id}")
+
+            except AgentException as e:
+                msg = f"Skipped execution: {str(e)}"
+                print(f"⚠️ [Step 3] {msg}")
+
+                # 將這個「跳過」的狀態記下來，傳給 Step 4 的 Summary 看
+                results[api_choice.api_id] = e.to_response_dict()
+
+            # 捕捉其他未預期的錯誤
             except Exception as e:
+                traceback.print_exc()
+                # 真正的程式 bug 才回傳 fail
                 return AgentResult.fail(
                     AgentError(
                         code=ErrorCode.UNKNOWN_ERROR,
-                        message=f"Field mapping failed for {api_choice.api_id}: {e}",
+                        message=f"System Crash at {api_choice.api_id}: {str(e)}",
                     )
                 )
-
-            print(f"[Step 3] Executing: {api_choice.api_id}")
-            print(f"         {http_request.method} {http_request.path}")
-            if final_query_params:
-                print(f"         Query: {final_query_params}")
-            if final_body and final_body != "{}":
-                print(f"         Body: {final_body}")
-
-            response, error = await execute_http_request(
-                base_url=self.base_url,
-                method=http_request.method,
-                path=http_request.path,
-                query_params=(
-                    final_query_params if http_request.method == "GET" else None
-                ),
-                body=final_body if http_request.method != "GET" else "",
-            )
-            if error:
-                print(f"[Step 3] Error: {error}")
-                return AgentResult.fail(error)
-
-            results[api_choice.api_id] = response
-            print(f"[Step 3] Success: {api_choice.api_id}")
 
         # ─────────────────────────────────────────────────────────
         # Step 4: Generate Summary
@@ -334,8 +403,29 @@ class L3Agent:
             source_response = results.get(mapping.from_api)
             if source_response is None:
                 raise Exception(f"Dependency not found: {mapping.from_api}")
+            # 如果上游已經斷了，下游直接連鎖反應中斷
+            if (
+                source_response
+                and isinstance(source_response, dict)
+                and source_response.get("status") == "error"
+            ):
+                print(
+                    f"🛑 Chained Failure: {mapping.from_api} failed, skipping current step."
+                )
+                raise DependencyMissingError(
+                    missing_field=mapping.from_field, source_api=mapping.from_api
+                )
 
-            value = get_nested(source_response, mapping.from_field)
+            # value = get_nested(source_response, mapping.from_field)
+            value = extract_value(source_response, mapping.from_field)
+
+            if value is None:
+                print(
+                    f"🛑 Critical: Failed to extract '{mapping.from_field}' from '{mapping.from_api}'"
+                )
+                raise DependencyMissingError(
+                    missing_field=mapping.from_field, source_api=mapping.from_api
+                )
 
             # 根據 HTTP method 決定塞到哪裡
             if http_request.method == "GET":
@@ -346,3 +436,95 @@ class L3Agent:
         final_body = json.dumps(body_dict, ensure_ascii=False) if body_dict else ""
 
         return query_params, final_body
+
+    async def _execute_with_pagination(
+        self, http_request: HttpRequest, base_url: str
+    ) -> tuple[dict[str, Any], Any]:
+        """
+        自動分頁獲取器：當策略為 ALL_PAGES 時，自動跑迴圈把所有資料撈回來。
+        """
+        print(
+            f"🔄 [Auto-Pagination] Strategy: ALL_PAGES triggered for {http_request.path}"
+        )
+
+        # 1. 準備 Request Body (強制設定較大的 PageSize)
+        try:
+            body_json = json.loads(http_request.body) if http_request.body else {}
+        except:
+            body_json = {}
+
+        # 只有 POST 且是列表查詢類型的 API 才需要處理分頁參數
+        if http_request.method == "POST":
+            # 覆寫 AI 可能給的小數字，設定一個較大但安全的數字 (例如 100)
+            body_json["pageSize"] = 100
+            body_json["pageNum"] = 1
+
+        all_records = []
+        total_count = 0
+        current_page = 1
+        max_pages_limit = 50  # 安全閥：避免無窮迴圈
+
+        while True:
+            # 2. 更新當前頁碼
+            if http_request.method == "POST":
+                body_json["pageNum"] = current_page
+                current_body = json.dumps(body_json)
+            else:
+                # GET 方法暫略，使用原始 body
+                current_body = http_request.body
+
+            # 3. 執行單次請求
+            response, error = await execute_http_request(
+                base_url=base_url,
+                method=http_request.method,
+                path=http_request.path,
+                query_params=http_request.query_params,
+                body=current_body,
+            )
+
+            if error:
+                print(f"❌ [Auto-Pagination] Error on page {current_page}: {error}")
+                # 遇到錯誤直接回報，避免數據不完整
+                return None, error
+
+            # 4. 解析標準回應結構
+            data_block = response.get("data", {})
+            if not isinstance(data_block, dict):
+                # 結構不對，可能不是分頁 API，直接回傳單頁結果
+                return response, None
+
+            records = data_block.get("records", [])
+
+            # 第一次請求時，獲取總筆數
+            if current_page == 1:
+                total_count = data_block.get("count", 0)
+                print(f"📊 [Auto-Pagination] Target Total: {total_count} records.")
+
+            if not records:
+                break
+
+            all_records.extend(records)
+            print(
+                f"   -> Page {current_page} fetched: {len(records)} items. (Total: {len(all_records)}/{total_count})"
+            )
+
+            # 5. 終止條件檢查
+            if len(all_records) >= total_count:
+                print("✅ [Auto-Pagination] Complete.")
+                break
+
+            if current_page >= max_pages_limit:
+                print(
+                    f"⚠️ [Auto-Pagination] Safety limit reached ({max_pages_limit} pages). Stopping."
+                )
+                break
+
+            current_page += 1
+
+        # 6. 構造最終的合併回應
+        final_response = {
+            "code": 200,
+            "message": "Auto-Pagination Completed",
+            "data": {"records": all_records, "count": len(all_records)},
+        }
+        return final_response, None
