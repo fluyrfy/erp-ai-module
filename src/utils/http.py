@@ -8,7 +8,7 @@ import httpx
 from typing import Any
 
 from baml_client.types import HttpRequest
-from src.agent.errors import AgentError, ErrorCode
+from src.agent.shared.errors import AgentError, ErrorCode
 
 
 def parse_body(body_str: str) -> dict | None:

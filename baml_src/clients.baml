@@ -1,29 +1,77 @@
 // Learn more about clients at https://docs.boundaryml.com/docs/snippets/clients/overview
 
+// -----------------------------------------------------------------------------
+// GPT-OSS 20B (Lightweight Reasoning) - Hosted via Ollama
+// -----------------------------------------------------------------------------
 
 // Using the new OpenAI Responses API for enhanced formatting
-client<llm> DefaultL3LLM {
-  // provider openai
-  // options {
-  //   base_url env.OLLAMA_BASE_URL
-  //   api_key "ollama" 
-  //   model "gpt-oss:20b"
-  // }
-  provider openai
-  retry_policy Exponential
-  options {
-    model "gpt-4o-mini"
-    api_key env.OPENAI_API_KEY
-    temperature 0.1
-  }
-}
-
-client<llm> OllamaGptOss20b {
-  provider openai
+client<llm> GptOss20bLow {
+  provider openai-responses
   options {
     base_url env.OLLAMA_BASE_URL
     api_key "ollama"
     model "gpt-oss:20b"
+    reasoning_effort "low"
+    temperature 0.1
+  }
+}
+
+client<llm> GptOss20bMedium {
+  provider openai-responses
+  options {
+    base_url env.OLLAMA_BASE_URL
+    api_key "ollama"
+    model "gpt-oss:20b"
+    reasoning_effort "medium"
+    temperature 0.1
+  }
+}
+
+client<llm> GptOss20bHigh {
+  provider openai-responses
+  options {
+    base_url env.OLLAMA_BASE_URL
+    api_key "ollama"
+    model "gpt-oss:20b"
+    reasoning_effort "high"
+    temperature 0.1
+  }
+}
+
+// -----------------------------------------------------------------------------
+// GPT-OSS 120B (Flagship Reasoning) - Hosted via Ollama
+// -----------------------------------------------------------------------------
+
+client<llm> GptOss120bLow {
+  provider openai-responses
+  options {
+    base_url env.OLLAMA_BASE_URL
+    api_key "ollama"
+    model "gpt-oss:120b"
+    reasoning_effort "low"
+    temperature 0.1
+  }
+}
+
+client<llm> GptOss120bMedium {
+  provider openai-responses
+  options {
+    base_url env.OLLAMA_BASE_URL
+    api_key "ollama"
+    model "gpt-oss:120b"
+    reasoning_effort "medium"
+    temperature 0.1
+  }
+}
+
+client<llm> GptOss120bHigh {
+  provider openai-responses
+  options {
+    base_url env.OLLAMA_BASE_URL
+    api_key "ollama"
+    model "gpt-oss:120b"
+    reasoning_effort "high"
+    temperature 0.1
   }
 }
 

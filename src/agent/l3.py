@@ -11,7 +11,7 @@ from typing import Any
 
 from baml_client.types import ApiChoice, FetchStrategy, HttpRequest
 from src.config import config
-from src.agent.errors import (
+from src.agent.shared.errors import (
     AgentError,
     AgentException,
     AgentResult,

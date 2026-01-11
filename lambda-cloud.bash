@@ -19,11 +19,12 @@ sleep 10
 echo "=== 3. 拉 GPT-OSS 20B ==="
 ollama pull gpt-oss:20b
 
+echo "⬇️ Pulling GPT-OSS 120B (Flagship/Reasoning)..."
+ollama pull gpt-oss:120b
+
 echo "=== 4. 驗證端口綁定 ==="
 netstat -tuln | grep 11434
 
-echo "=== 5. 拉 GPT-OSS 20B ==="
-ollama pull gpt-oss:20b
 
 echo "=== 6. 最終驗證 ==="
 curl http://localhost:11434/api/tags

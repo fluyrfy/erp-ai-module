@@ -8,8 +8,12 @@ function SelectApi(
   api_doc: string,
   module_context: string
 ) -> ApiSelection {
-  client GPT4o
-  // client DefaultL3LLM
+  // client GPT4o
+  // [G1, G2, G3, G4]: 20B High
+  // client GptOss20bHigh
+  // [G5, G6]: 120B High
+  // client GptOss120bHigh
+  client GptOss20bLow
   prompt #"
     You are an API Planner. Your goal is to create an efficient execution plan.
 
@@ -42,7 +46,12 @@ function GenerateHttpRequest(
   api_spec: string,
   current_date: string
 ) -> HttpRequest {
-  client DefaultL3LLM
+  // client GPT4oMini
+  // [G1, G2]: 20B Low
+  // client GptOss20bLow
+  // [G3, G4, G5, G6]: 120B Low
+  // client GptOss120bLow
+  client GptOss20bLow
   prompt #"
     You are an API parameter generator.
 
@@ -82,7 +91,16 @@ function GenerateSummary(
   api_response: string,
   output_language: string
 ) -> Summary {
-  client GPT4o
+  // client GPT4o
+  // [G1]: 20B Medium
+  // client GptOss20bMedium
+  // [G2]: 20B High
+  // client GptOss20bHigh
+  // [G3, G5]: 120B Low
+  // client GptOss120bLow
+  // [G4, G6]: 120B High
+  // client GptOss120bHigh
+  client GptOss20bMedium
   prompt #"
     You are an ERP assistant that summarizes data.
 
