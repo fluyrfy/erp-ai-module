@@ -21,6 +21,7 @@ class ErrorCode(Enum):
     # --- Execution Layer (Step 3) ---
     EXEC_HTTP_ERROR = "EXEC_HTTP_ERROR"  # 4xx, 5xx
     EXEC_TIMEOUT = "EXEC_TIMEOUT"  # 連線逾時
+    HTTP_REQUEST_FAILED = "HTTP_REQUEST_FAILED"
 
     # --- Data/Logic Layer (Cross-cutting) ---
     DATA_DEPENDENCY_MISSING = "DATA_DEPENDENCY_MISSING"  # 關鍵：依賴斷裂 (Chain Broken)

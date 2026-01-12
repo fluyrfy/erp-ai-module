@@ -59,10 +59,23 @@ class HttpRequest {
 
 // Generic Summary Output
 class Summary {
-  title string @description("Summary title in user's language")
-  key_points string[] @description("Key findings, max 5 items")
-  metrics map<string, string> @description("Important numbers/metrics")
-  recommendation string @description("Suggested next action")
+  // 讓 L2 決定要載入哪個分析模組 (e.g., "financial_record", "hr_roster")
+  data_type string @description("Classifies the data domain. Use snake_case.")
+
+  // 狀態機判斷
+  result_status string @description("High-level status: 'SUCCESS', 'NO_DATA', or 'ERROR'")
+
+  // LLM 閱讀的簡報
+  content_description string @description("Contextual summary of what this data represents (Time range, Target Department, Filters applied).")
+
+  // L2 做邏輯推理用的素材
+  key_points string[] @description("Key findings, max 5 items, factual observations only")
+
+  // 關鍵數據（含單位）
+  metrics map<string, string> @description("Keys must include unit suffix (e.g., 'salary_twd', 'count_person'). Values must be raw numbers/booleans.")
+
+  // 關鍵關連 ID
+  extracted_entities map<string, string[]> @description("Map of entity types to IDs. Key examples: 'employee_ids', 'dept_codes'.")
 }
 
 // For multi-tool scenarios (future)

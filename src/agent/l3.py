@@ -299,9 +299,8 @@ class L3Agent:
         # ─────────────────────────────────────────────────────────
         try:
             summary = b.GenerateSummary(
-                user_query=user_query,
+                task_objective=user_query,
                 api_response=json.dumps(results, ensure_ascii=False),
-                output_language=self.language,
             )
         except Exception as e:
             save_trace(
@@ -317,28 +316,29 @@ class L3Agent:
                 )
             )
 
-        print(f"[Step 4] Summary: {summary.title}")
-        return AgentResult.ok(self._format_summary(summary))
+        summary_json = summary.model_dump_json(indent=config.JSON_INDENT)
+        print(f"[Step 4] Summary: {summary_json}")
+        return AgentResult.ok(summary_json)
 
-    def _format_summary(self, summary) -> str:
-        """Format Summary object for display"""
-        lines = [f"## {summary.title}", ""]
+    # def _format_summary(self, summary) -> str:
+    #     """Format Summary object for display"""
+    #     lines = [f"## {summary.title}", ""]
 
-        if summary.key_points:
-            for point in summary.key_points:
-                lines.append(f"- {point}")
-            lines.append("")
+    #     if summary.key_points:
+    #         for point in summary.key_points:
+    #             lines.append(f"- {point}")
+    #         lines.append("")
 
-        if summary.metrics:
-            lines.append("📊 **Key Metrics:**")
-            for key, value in summary.metrics.items():
-                lines.append(f"  - {key}: {value}")
-            lines.append("")
+    #     if summary.metrics:
+    #         lines.append("📊 **Key Metrics:**")
+    #         for key, value in summary.metrics.items():
+    #             lines.append(f"  - {key}: {value}")
+    #         lines.append("")
 
-        if summary.recommendation:
-            lines.append(f"💡 **Recommendation:** {summary.recommendation}")
+    #     if summary.recommendation:
+    #         lines.append(f"💡 **Recommendation:** {summary.recommendation}")
 
-        return "\n".join(lines)
+    #     return "\n".join(lines)
 
     def _topological_sort(self, apis: list[ApiChoice]) -> list[ApiChoice]:
         """

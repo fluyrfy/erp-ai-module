@@ -8,12 +8,12 @@ function SelectApi(
   api_doc: string,
   module_context: string
 ) -> ApiSelection {
-  // client GPT4o
+  client GPT4o
   // [G1, G2, G3, G4]: 20B High
   // client GptOss20bHigh
   // [G5, G6]: 120B High
   // client GptOss120bHigh
-  client GptOss20bLow
+  // client GptOss20bLow
   prompt #"
     You are an API Planner. Your goal is to create an efficient execution plan.
 
@@ -46,12 +46,12 @@ function GenerateHttpRequest(
   api_spec: string,
   current_date: string
 ) -> HttpRequest {
-  // client GPT4oMini
+  client GPT4oMini
   // [G1, G2]: 20B Low
   // client GptOss20bLow
   // [G3, G4, G5, G6]: 120B Low
   // client GptOss120bLow
-  client GptOss20bLow
+  // client GptOss20bLow
   prompt #"
     You are an API parameter generator.
 
@@ -87,11 +87,10 @@ function GenerateHttpRequest(
 
 // Step 3: Generate summary from API response
 function GenerateSummary(
-  user_query: string,
+  task_objective: string,
   api_response: string,
-  output_language: string
 ) -> Summary {
-  // client GPT4o
+  client GPT4o
   // [G1]: 20B Medium
   // client GptOss20bMedium
   // [G2]: 20B High
@@ -100,31 +99,45 @@ function GenerateSummary(
   // client GptOss120bLow
   // [G4, G6]: 120B High
   // client GptOss120bHigh
-  client GptOss20bMedium
+  // client GptOss20bMedium
   prompt #"
-    You are an ERP assistant that summarizes data.
+    You are an Data Summarizer. 
+    Your output is piped directly into a Analysis Agent.
 
-    USER'S ORIGINAL QUESTION:
-    {{ user_query }}
+    === TASK OBJECTIVE ===
+    {{ task_objective }}
 
-    API RESPONSE DATA:
+    === RAW DATA ===
     {{ api_response }}
 
-    OUTPUT LANGUAGE: {{ output_language }}
+    *** CRITICAL INSTRUCTIONS ***
 
-    *** LOGIC FOR HANDLING ERRORS ***
-    1. **Dependency/Data Chain Failure**:
-        - Look for entries with **"status": "error"** AND **"code": "DATA_DEPENDENCY_MISSING"**.
-        - This strictly means the Target Object (e.g., Department, Employee) WAS NOT FOUND in the previous step.
-        - You MUST reply: "Cannot find [Target Name]. Please check if the name is correct."
-        - **Strictly FORBIDDEN** to say "No missing data found" or "Everything is fine" when you see this error code.
+    - **Data Type & Status**:
+       - Analyze the API response structure.
+       - If response is empty list [] or null -> result_status: "NO_DATA".
+       - If response indicates error -> result_status: "ERROR".
+       - Otherwise -> result_status: "SUCCESS".
+       - data_type: Classify the entity (e.g., "employee_list", "department_info").
 
-    2. **Normal Summary**:
-        Generate a clear, concise summary.
-        - Title should directly answer the question
-        - Key points: max 5, most important findings
-        - Data highlights: key numbers/metrics
-        - Recommendation: actionable next step
+    - **Context Description**:
+       - Generate 'content_description'. 
+       - Do NOT just repeat the TASK OBJECTIVE. Explain the *scope* of the data.
+       - Example: "Salary data for Dept A01 filtered by date > 2024-01-01."
+
+    - **Metrics Extraction (Machine Readable)**:
+       - Keys: snake_case, MUST imply the unit (e.g., use 'count' instead of 'num', 'salary_twd' instead of 'salary').
+       - Values: RAW NUMBERS ONLY. No symbols, no text.
+         - BAD: "156 people", "$50,000", "3.2%"
+         - GOOD: "156", "50000", "0.032"
+
+    - **Entities Extraction**:
+       - Extract all unique primary identifiers (IDs, Codes) from the response.
+       - This allows the analyze agent to query other modules using these entities.
+
+    - **Key Points**:
+       - Max 5 factual observations
+       - STRICTLY FORBIDDEN: Recommendations, suggestions, next steps, "User should...".
+       - If status is ERROR, describe the error cause factually.
 
     {{ ctx.output_format }}
   "#

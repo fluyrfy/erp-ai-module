@@ -80,7 +80,7 @@ async def execute_http_request(
         )
     except httpx.HTTPStatusError as e:
         return None, AgentError(
-            code=ErrorCode.HTTP_REQUEST_FAILED,
+            code=ErrorCode.EXEC_HTTP_ERROR,
             message=f"HTTP {e.response.status_code}: {e.response.text[:200]}",
             details={"path": path, "method": method, "status": e.response.status_code},
         )
