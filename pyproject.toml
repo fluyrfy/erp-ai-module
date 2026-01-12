@@ -1,11 +1,11 @@
 [project]
-name = "hebu-ai"
+name = "erp-ai-module"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "baml-py==0.216.0",
+    "baml-py==0.217.0",
     "dotenv>=0.9.9",
     "fastapi>=0.128.0",
     "httpx>=0.28.1",

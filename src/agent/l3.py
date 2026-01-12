@@ -5,7 +5,6 @@ L3 Generic Agent
 from collections import Counter
 import json
 from datetime import date
-from pathlib import Path
 import traceback
 from typing import Any
 
@@ -18,7 +17,7 @@ from src.agent.shared.errors import (
     ErrorCode,
     DependencyMissingError,
 )
-from src.utils import get_nested, execute_http_request
+from src.utils import execute_http_request
 import time
 from src.tracing import save_trace
 
@@ -26,6 +25,7 @@ from src.tracing import save_trace
 from baml_client import b
 from src.swagger_parser import SwaggerParser
 from src.utils.data import extract_value
+from src.utils.http import HttpRequestError, HttpTimeoutError
 
 
 class L3Agent:
@@ -213,39 +213,72 @@ class L3Agent:
 
                 # Execution Strategy
                 response = None
-                error = None
 
                 # 判斷 BAML 決定的策略
-                if http_request.fetch_strategy == FetchStrategy.ALL_PAGES:
-                    # [策略 A] 全量獲取：呼叫自動分頁 Helper
-                    response, error = await self._execute_with_pagination(
-                        http_request, self.base_url
-                    )
-                else:
+                try:
+                    # if http_request.fetch_strategy == FetchStrategy.ALL_PAGES:
+                    #     # [策略 A] 全量獲取：呼叫自動分頁 Helper
+                    #     response = await execute_with_pagination(
+                    #         http_request, self.base_url
+                    #     )
+                    # else:
                     # [策略 B] 單次獲取：原有的邏輯
-                    response, error = await execute_http_request(
+                    response = await execute_http_request(
                         base_url=self.base_url,
                         method=http_request.method,
                         path=http_request.path,
                         query_params=http_request.query_params,
                         body=http_request.body,
                     )
-                if error:
+                except (HttpRequestError, HttpTimeoutError) as e:
                     results[api_choice.api_id] = {
                         "status": "error",
                         "code": "HTTP_ERROR",
-                        "message": str(error),
+                        "message": e.message,
                     }
                     continue
 
-                # 檢查 BAML 是否指定了聚合欄位 (例如 "lastName")
-                agg_field = getattr(http_request, "aggregation_field", None)
-
-                # 只有在成功取得資料 且 有指定聚合欄位時才執行
-                if response and agg_field:
+                if response:
                     records = response.get("data", {}).get("records", [])
+                    total = response.get("data", {}).get("count", len(records))
 
-                    if records:
+                    # ═══════════════════════════════════════════════════
+                    # 護欄：分級截斷（永遠執行）
+                    # ═══════════════════════════════════════════════════
+                    if len(records) > config.RECORD_LIMIT_TRUNCATE:
+                        # 🔴 危險區：資料過大，清空原始資料
+                        response["data"]["records"] = []
+                        response["data"]["_truncated"] = True
+                        response["data"]["_note"] = (
+                            f"Dataset too large ({total} records). "
+                            f"Cleared raw data. Please narrow your query or use aggregation."
+                        )
+                        print(f"🛑 [Rejected] {total} records exceeds limit")
+                        records = []  # ⭐ 清空，後續 MapReduce 也沒資料可用
+
+                    elif len(records) > config.RECORD_LIMIT_SAFE:
+                        # 🟡 警戒區：截斷
+                        response["data"]["records"] = records[
+                            : config.RECORD_LIMIT_SAFE
+                        ]
+                        response["data"]["_truncated"] = True
+                        response["data"]["_note"] = (
+                            f"Truncated: showing first {config.RECORD_LIMIT_SAFE} "
+                            f"of {total} records."
+                        )
+                        print(
+                            f"⚠️ [Truncate] {len(records)} → {config.RECORD_LIMIT_SAFE} records"
+                        )
+                        records = response["data"]["records"]  # 更新為截斷後的
+
+                    # 🟢 安全區：不做任何處理
+
+                    # ═══════════════════════════════════════════════════
+                    # MapReduce：聚合統計（只有指定 agg_field 時執行）
+                    # ═══════════════════════════════════════════════════
+                    # 檢查 BAML 是否指定了聚合欄位 (例如 "lastName")
+                    agg_field = getattr(http_request, "aggregation_field", None)
+                    if agg_field and records:
                         print(
                             f"🧮 [MapReduce] Aggregating data by field: '{agg_field}'..."
                         )
@@ -436,95 +469,3 @@ class L3Agent:
         final_body = json.dumps(body_dict, ensure_ascii=False) if body_dict else ""
 
         return query_params, final_body
-
-    async def _execute_with_pagination(
-        self, http_request: HttpRequest, base_url: str
-    ) -> tuple[dict[str, Any], Any]:
-        """
-        自動分頁獲取器：當策略為 ALL_PAGES 時，自動跑迴圈把所有資料撈回來。
-        """
-        print(
-            f"🔄 [Auto-Pagination] Strategy: ALL_PAGES triggered for {http_request.path}"
-        )
-
-        # 1. 準備 Request Body (強制設定較大的 PageSize)
-        try:
-            body_json = json.loads(http_request.body) if http_request.body else {}
-        except:
-            body_json = {}
-
-        # 只有 POST 且是列表查詢類型的 API 才需要處理分頁參數
-        if http_request.method == "POST":
-            # 覆寫 AI 可能給的小數字，設定一個較大但安全的數字 (例如 100)
-            body_json["pageSize"] = 100
-            body_json["pageNum"] = 1
-
-        all_records = []
-        total_count = 0
-        current_page = 1
-        max_pages_limit = 50  # 安全閥：避免無窮迴圈
-
-        while True:
-            # 2. 更新當前頁碼
-            if http_request.method == "POST":
-                body_json["pageNum"] = current_page
-                current_body = json.dumps(body_json)
-            else:
-                # GET 方法暫略，使用原始 body
-                current_body = http_request.body
-
-            # 3. 執行單次請求
-            response, error = await execute_http_request(
-                base_url=base_url,
-                method=http_request.method,
-                path=http_request.path,
-                query_params=http_request.query_params,
-                body=current_body,
-            )
-
-            if error:
-                print(f"❌ [Auto-Pagination] Error on page {current_page}: {error}")
-                # 遇到錯誤直接回報，避免數據不完整
-                return None, error
-
-            # 4. 解析標準回應結構
-            data_block = response.get("data", {})
-            if not isinstance(data_block, dict):
-                # 結構不對，可能不是分頁 API，直接回傳單頁結果
-                return response, None
-
-            records = data_block.get("records", [])
-
-            # 第一次請求時，獲取總筆數
-            if current_page == 1:
-                total_count = data_block.get("count", 0)
-                print(f"📊 [Auto-Pagination] Target Total: {total_count} records.")
-
-            if not records:
-                break
-
-            all_records.extend(records)
-            print(
-                f"   -> Page {current_page} fetched: {len(records)} items. (Total: {len(all_records)}/{total_count})"
-            )
-
-            # 5. 終止條件檢查
-            if len(all_records) >= total_count:
-                print("✅ [Auto-Pagination] Complete.")
-                break
-
-            if current_page >= max_pages_limit:
-                print(
-                    f"⚠️ [Auto-Pagination] Safety limit reached ({max_pages_limit} pages). Stopping."
-                )
-                break
-
-            current_page += 1
-
-        # 6. 構造最終的合併回應
-        final_response = {
-            "code": 200,
-            "message": "Auto-Pagination Completed",
-            "data": {"records": all_records, "count": len(all_records)},
-        }
-        return final_response, None

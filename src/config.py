@@ -22,5 +22,10 @@ class Config:
     CONFIDENCE_THRESHOLD = 0.6
     HTTP_TIMEOUT = 30.0
 
+    # Output Formatting
+    JSON_INDENT = 2  # 設定 JSON 縮排，預設為 2，設為 0 或 None 則為 minified json
+    RECORD_LIMIT_SAFE = 100  # 安全區：全部給 LLM
+    RECORD_LIMIT_TRUNCATE = 200  # 警戒區：截斷
+
 
 config = Config()

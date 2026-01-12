@@ -4,10 +4,10 @@
 
 
 // === FetchStrategy ===
-enum FetchStrategy {
-  SINGLE_PAGE @description("Default mode. Use this when finding specific persons, departments, or a small set of records (e.g., 'Find John's email').")
-  ALL_PAGES @description("Aggregation mode. Use this ONLY when the user asks for STATISTICS, TOTAL COUNTS, RANKINGS, or SEARCHING ALL records (e.g., 'How many...', 'Most common...', 'List all...').")
-}
+// enum FetchStrategy {
+//   SINGLE_PAGE @description("Default mode. Use this when finding specific persons, departments, or a small set of records (e.g., 'Find John's email').")
+//   ALL_PAGES @description("Aggregation mode. Use this ONLY when the user asks for STATISTICS, TOTAL COUNTS, RANKINGS, or SEARCHING ALL records (e.g., 'How many...', 'Most common...', 'List all...').")
+// }
 
 
 // === API Selection ===
@@ -53,7 +53,7 @@ class HttpRequest {
   query_params map<string, string> @description("Query string parameters")
   body string @description("Request body as JSON string or POST/PUT body. Use '{}' for empty string for GET/DELETE")
   headers map<string, string> @description("Additional headers if needed")
-  fetch_strategy FetchStrategy @description("Analyze user intent: is this a specific lookup (SINGLE) or a statistical/global query (ALL)?")
+  // fetch_strategy FetchStrategy @description("Analyze user intent: is this a specific lookup (SINGLE) or a statistical/global query (ALL)?")
   aggregation_field string? @description("If fetch_strategy is ALL_PAGES and user asks for statistics (e.g. 'most common surname'), specify the field name to count (e.g. 'lastName'). Otherwise null.")
 }
 
