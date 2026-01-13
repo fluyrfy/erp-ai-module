@@ -8,7 +8,9 @@ from datetime import date
 import traceback
 from typing import Any
 
-from baml_client.types import ApiChoice, FetchStrategy, HttpRequest
+import httpx
+
+from baml_client.types import ApiChoice, HttpRequest, Task
 from src.config import config
 from src.agent.shared.errors import (
     AgentError,
@@ -31,28 +33,20 @@ from src.utils.http import HttpRequestError, HttpTimeoutError
 class L3Agent:
     """Generic L3 Agent for any module"""
 
-    def __init__(
-        self,
-        module_name: str,
-        base_url: str | None = None,
-        language: str | None = None,
-    ):
+    def __init__(self, module_name: str):
         """
         Initialize L3 Agent
 
         Args:
             module_name: Module identifier (e.g., "HR", "Inventory")
-            base_url: Backend URL. Defaults to BACKEND_BASE_URL env var
-            language: Output language. Defaults to config setting
         """
         self.module_name = module_name
-        self.language = language or config.DEFAULT_LANGUAGE
-        self.base_url = base_url or config.BACKEND_BASE_URL
-        self.swagger_url = (
-            f"{self.base_url}{config.SWAGGER_DOC_PATH}/{module_name.lower()}"
-        )
+        # self.language = language or config.DEFAULT_LANGUAGE
+        # self.swagger_url = (
+        #     f"{self.base_url}{config.SWAGGER_DOC_PATH}/{module_name.lower()}"
+        # )
 
-        self.parser: SwaggerParser | None = SwaggerParser(self.swagger_url)
+        self.parser: SwaggerParser = SwaggerParser(module_name)
 
         # Load API doc
         # if api_doc_path is None:
@@ -60,8 +54,6 @@ class L3Agent:
         # self.api_doc = self._load_api_doc(api_doc_path)
 
         print(f"[L3Agent] Module: {module_name}")
-        print(f"[L3Agent] Backend: {self.base_url}")
-        print(f"[L3Agent] Swagger: {self.swagger_url}")
 
     # def _load_api_doc(self, path: str) -> str:
     #     """Load OpenAPI spec from file"""
@@ -70,12 +62,12 @@ class L3Agent:
     #         raise FileNotFoundError(f"API doc not found: {path}")
     #     return file_path.read_text(encoding="utf-8")
 
-    async def query(self, user_query: str) -> AgentResult:
+    async def execute(self, task: Task) -> AgentResult:
         """
         Process user query through the agent pipeline
 
         Args:
-            user_query: Natural language question
+            task: L2 Task
 
         Returns:
             AgentResult with success/failure and data/error
@@ -83,13 +75,22 @@ class L3Agent:
         start_time = time.time()
 
         print(f"\n{'='*60}")
-        print(f"[Query] {user_query}")
+        print(f"[Task] {task}")
         print(f"{'='*60}")
         # ─────────────────────────────────────────────────────────
         # Step 0: 載入並解析最新 Swagger spec
         # ─────────────────────────────────────────────────────────
         try:
             await self.parser.load()
+        except httpx.HTTPStatusError as e:
+            # 404 = module swagger 不存在
+            return AgentResult.fail(
+                AgentError(
+                    code=ErrorCode.INVALID_MODULE,
+                    message=f"Failed to load API spec for module '{self.module_name}': HTTP {e.response.status_code}",
+                    details={"swagger_url": self.swagger_url},
+                )
+            )
         except Exception as e:
             return AgentResult.fail(
                 AgentError(
@@ -108,7 +109,7 @@ class L3Agent:
         # ─────────────────────────────────────────────────────────
         try:
             selection = b.SelectApi(
-                user_query=user_query,
+                task=task,
                 api_doc=api_catalog_text,
                 module_context=f"This is the {self.module_name} module.",
             )
@@ -159,7 +160,7 @@ class L3Agent:
             api_spec = json.dumps(single_spec, ensure_ascii=False)
             try:
                 http_request = b.GenerateHttpRequest(
-                    user_query=user_query,
+                    task=task,
                     api_spec=api_spec,
                     current_date=str(date.today()),
                 )
@@ -202,14 +203,14 @@ class L3Agent:
                     http_request=http_request,
                     field_mappings=api_choice.field_mappings,
                     results=results,
+                    target_api_spec=single_spec,
                 )
                 http_request.query_params = (
                     final_query_params if http_request.method == "GET" else {}
                 )
                 http_request.body = final_body if http_request.method != "GET" else ""
 
-                print(f"[Step 3] Strategy: {http_request.fetch_strategy}")
-                print(f"         {http_request.method} {http_request.path}")
+                print(f"[Step 3]  {http_request.method} {http_request.path}")
 
                 # Execution Strategy
                 response = None
@@ -224,7 +225,7 @@ class L3Agent:
                     # else:
                     # [策略 B] 單次獲取：原有的邏輯
                     response = await execute_http_request(
-                        base_url=self.base_url,
+                        base_url=config.BACKEND_BASE_URL,
                         method=http_request.method,
                         path=http_request.path,
                         query_params=http_request.query_params,
@@ -332,13 +333,13 @@ class L3Agent:
         # ─────────────────────────────────────────────────────────
         try:
             summary = b.GenerateSummary(
-                task_objective=user_query,
+                task=task,
                 api_response=json.dumps(results, ensure_ascii=False),
             )
         except Exception as e:
             save_trace(
                 module=self.module_name,
-                user_query=user_query,
+                task=task,
                 success=False,
                 error=str(e),
                 duration_ms=(time.time() - start_time) * 1000,
@@ -408,64 +409,93 @@ class L3Agent:
         http_request: HttpRequest,
         field_mappings: list,
         results: dict[str, Any],
+        target_api_spec: dict,
     ) -> tuple[dict[str, str], str]:
         """
         根據 field_mappings 從前一個 API 的結果取值塞入
-
-        Args:
-            http_request: LLM 生成的 HTTP request
-            field_mappings: 欄位映射列表
-            results: 已執行 API 的結果
-
-        Returns:
-            (final_query_params, final_body)
         """
-        # 複製原本的參數
+        # 1. 複製原始參數
         query_params = (
             dict(http_request.query_params) if http_request.query_params else {}
         )
-        body_dict = (
-            json.loads(http_request.body)
-            if http_request.body and http_request.body != "{}"
-            else {}
-        )
 
-        # 套用每個 mapping
+        body_dict = {}
+        if http_request.body and http_request.body != "{}":
+            try:
+                body_dict = json.loads(http_request.body)
+            except json.JSONDecodeError:
+                pass  # Body 可能不是 JSON，那就無法注入，略過
+
+        # 預先從 target_api_spec 建立參數類型映射
+        param_types = {}
+        request_body_schema = target_api_spec.get("request_body", {}).get("schema", {})
+        if request_body_schema.get("properties"):
+            for key, schema in request_body_schema["properties"].items():
+                param_types[key] = schema.get("type")
+
+        # 2. 執行 Mapping
         for mapping in field_mappings:
-            # 從前一個 API 的 response 取值
+            # --- (A) 取得來源資料 (Source) ---
             source_response = results.get(mapping.from_api)
+
+            # 檢查依賴是否存在
             if source_response is None:
-                raise Exception(f"Dependency not found: {mapping.from_api}")
-            # 如果上游已經斷了，下游直接連鎖反應中斷
+                # 這裡不一定要報錯，因為可能是平行執行的其他支 API 還沒跑
+                # 但依據你的架構，depends_on 應該保證了順序，所以這裡是 Error
+                raise DependencyMissingError(
+                    missing_field="API_RESULT", source_api=mapping.from_api
+                )
+
+            # 檢查上游是否失敗
             if (
-                source_response
-                and isinstance(source_response, dict)
+                isinstance(source_response, dict)
                 and source_response.get("status") == "error"
             ):
                 print(
-                    f"🛑 Chained Failure: {mapping.from_api} failed, skipping current step."
+                    f"🛑 Dependency Failed: '{mapping.from_api}' failed, skipping mapping."
                 )
-                raise DependencyMissingError(
-                    missing_field=mapping.from_field, source_api=mapping.from_api
-                )
+                continue  # 上游掛了，我們就不填這個參數，試著用預設值跑跑看
 
-            # value = get_nested(source_response, mapping.from_field)
+            # 提取數值
             value = extract_value(source_response, mapping.from_field)
-
             if value is None:
+                # 取不到值（例如該欄位是 null），通常我們選擇跳過，不硬塞
                 print(
-                    f"🛑 Critical: Failed to extract '{mapping.from_field}' from '{mapping.from_api}'"
+                    f"⚠️ Mapping Warning: Extracted None for '{mapping.from_field}' from '{mapping.from_api}'"
                 )
-                raise DependencyMissingError(
-                    missing_field=mapping.from_field, source_api=mapping.from_api
-                )
+                continue
 
-            # 根據 HTTP method 決定塞到哪裡
+            target_key = mapping.to_param
+
+            # --- (B) 注入目標參數 (Target) ---
+
+            # Case 1: GET Query Params (通常都是字串)
             if http_request.method == "GET":
-                query_params[mapping.to_param] = str(value)
-            else:
-                body_dict[mapping.to_param] = value
+                query_params[target_key] = str(value)
 
+            # Case 2: POST/PUT Body (結構化資料)
+            else:
+                # 取得目前該欄位的 "預設值" 或 "現有值"
+                # 這很重要，我們透過它來判斷目標是不是一個 List
+                current_value = body_dict.get(target_key)
+                target_type = param_types.get(target_key, "string")
+                if target_type == "array":
+                    # 確保是 list
+                    if current_value is None:
+                        body_dict[target_key] = []
+                    elif not isinstance(body_dict[target_key], list):
+                        body_dict[target_key] = [body_dict[target_key]]
+
+                    if isinstance(value, list):
+                        body_dict[target_key].extend(value)
+                    else:
+                        body_dict[target_key].append(value)
+
+                else:
+                    # scalar 直接覆蓋
+                    body_dict[target_key] = value
+
+        # 3. 序列化回字串
         final_body = json.dumps(body_dict, ensure_ascii=False) if body_dict else ""
 
         return query_params, final_body

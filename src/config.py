@@ -18,7 +18,7 @@ class Config:
     SWAGGER_DOC_PATH = "/v3/api-docs"
 
     # Agent Settings
-    DEFAULT_LANGUAGE = "Traditional Chinese"
+    # DEFAULT_LANGUAGE = "Traditional Chinese"
     CONFIDENCE_THRESHOLD = 0.6
     HTTP_TIMEOUT = 30.0
 

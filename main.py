@@ -5,7 +5,9 @@ L3 Agent - Single Shot Benchmark
 import asyncio
 import time
 import sys
-from src.agent.l3 import L3Agent
+
+# from src.agent.l3 import L3Agent
+from src.agent.l2 import L2Agent
 
 # 維度一
 # DEFAULT_QUERY = "幫我找姓『陳』的員工。"
@@ -30,14 +32,7 @@ from src.agent.l3 import L3Agent
 # DEFAULT_QUERY = "全公司所有員工和部門，只要名字裡有『金』字的都列出來。"
 
 
-DEFAULT_QUERY = """
-ACTION_REQUIRED: GET_ORG_STRUCTURE
-TARGET_ENTITY: Department
-CONTEXT: "The frontend needs to render a nested Organization Chart visualization."
-OUTPUT_GOAL: Retrieve the full hierarchical tree of departments, including parent-child relationships.
-CONSTRAINTS:
-  - Format: Nested/Tree (Not Flat)
-"""
+DEFAULT_QUERY = """幫我找一下名字裡面有『大成』，而且是在『總經理室』的員工。"""
 
 
 async def main():
@@ -55,13 +50,13 @@ async def main():
     print("[System] Initializing Agent...")
     t0 = time.perf_counter()
 
-    agent = L3Agent(module_name="hr")
+    agent = L2Agent()
 
     t1 = time.perf_counter()
     print(f"[System] Agent Initialized in {t1 - t0:.4f}s")
 
     # 2. 執行查詢計時 (真正的推論時間)
-    print(f"[L3Agent] 🤖 Executing Pipeline...")
+    print(f" 🤖 Executing Pipeline...")
     start_time = time.perf_counter()
 
     # 執行！
@@ -79,13 +74,15 @@ async def main():
         # 如果你有在 result 裡塞 metrics，也可以印出來
         # print(f"\n[Metrics] Steps: {result.steps_count} | Tokens: {result.total_tokens}")
     else:
-        print(f"❌ Error: {result.error}")
+        print(f"❌ Error: {result.error.code}")
+        print(f"   Message: {result.error.message}")
+        if result.error.details:
+            print(f"   Details: {result.error.details}")
 
     print("=" * 68)
 
     # 4. 效能儀表板
     print(f"⏱️  Total Execution Time : {duration:.4f} seconds")
-    print(f"🚀 Model Configuration  : 請檢查 functions.baml (G1~G6)")
     print("=" * 68 + "\n")
 
 

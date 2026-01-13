@@ -4,22 +4,147 @@ Swagger/OpenAPI parser - 從後端動態載入並瘦身
 
 import json
 import httpx
-from typing import Any
+from typing import Any, Dict, List
+
+from src.config import config
 
 
 class SwaggerParser:
-    def __init__(self, swagger_url: str):
+    def __init__(self, module_name: str):
         """
         Args:
-            swagger_url: e.g. "https://your-backend/v3/api-docs"
+            module_name: e.g. "hr", "inventory" (Parser 會自己去 Config 找 URL)
         """
-        self.swagger_url = swagger_url
+        self.module_name = module_name
+        self.swagger_url = SwaggerParser.build_doc_url(module_name)
         self._raw: dict | None = None
         self._catalog: list[dict] | None = None
 
+    @staticmethod
+    def build_doc_url(module_name: str) -> str:
+        """
+        根據 Config 自動組裝 Swagger URL
+        Example: "http://localhost:8080/v3/api-docs/hr"
+        """
+        base = config.BACKEND_BASE_URL.rstrip("/")
+        doc_path = config.SWAGGER_DOC_PATH.rstrip("/")
+        return f"{base}{doc_path}/{module_name.lower()}"
+
+    @staticmethod
+    def build_config_url() -> str:
+        """
+        組裝 Service Discovery URL
+        Example: "http://localhost:8080/v3/api-docs/swagger-config"
+        """
+        base = config.BACKEND_BASE_URL.rstrip("/")
+        doc_path = config.SWAGGER_DOC_PATH.rstrip("/")
+        return f"{base}{doc_path}/swagger-config"
+
+    # 服務發現 (Service Discovery)
+    @staticmethod
+    async def fetch_available_modules() -> List[Dict[str, str]]:
+        """
+        [Service Discovery] 呼叫 swagger-config 取得所有可用的模組清單
+        """
+        target_url = SwaggerParser.build_config_url()
+        # print(f"[SwaggerParser] 🔍 Discovering modules from: {target_url}")
+
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.get(target_url)
+                if response.status_code == 200:
+                    data = response.json()
+                    modules = []
+                    # 標準化回傳: [{'name': 'hr', 'url': 'http://.../v3/api-docs/hr'}]
+                    for u in data.get("urls", []):
+                        name = u.get("name")
+                        rel_url = u.get("url")
+                        if name and rel_url:
+                            # 這裡我們甚至可以忽略後端給的 url，自己用 build_doc_url 重組確保一致
+                            # 但為了相容性，我們先用後端的，並補全 domain
+                            full_url = (
+                                rel_url
+                                if rel_url.startswith("http")
+                                else f"{config.BACKEND_BASE_URL.rstrip('/')}{rel_url}"
+                            )
+                            modules.append({"name": name, "url": full_url})
+                    return modules
+        except Exception as e:
+            print(f"⚠️ Service Discovery Error: {e}")
+        return []
+
+    @staticmethod
+    async def fetch_module_detail(name: str, url: str) -> dict | None:
+        """
+        下載並解析單一模組的 Swagger JSON，回傳清洗後的物件
+        """
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    print(f"⚠️ Failed to fetch {name}: {resp.status_code}")
+                    return None
+
+                data = resp.json()
+
+                # 1. 抓取我們在 Java Config 寫好的 Info (Title & Description)
+                info = data.get("info", {})
+                clean_title = info.get("title", "")
+                clean_desc = info.get("description", "")
+
+                # 2. 抓取 Tags 作為 Capabilities
+                # 這會對應到 Java 的 tags: [{name: "職稱管理", ...}]
+                tags = data.get("tags", [])
+                capabilities = [t.get("name") for t in tags if t.get("name")]
+
+                # 3. 回傳結構化資料 (這就是 AI 要吃的 JSON Object)
+                return {
+                    "module": name,  # 給程式路由用 (key)
+                    "title": clean_title,  # 給 AI 理解用 (human readable name)
+                    "description": clean_desc,  # 給 AI 理解用 (summary)
+                    "capabilities": capabilities,  # 給 AI 判斷功能用
+                }
+
+        except Exception as e:
+            print(f"⚠️ Error parsing module {name}: {e}")
+            return None
+
+    @staticmethod
+    async def fetch_module_metadata(name: str, url: str) -> str:
+        """
+        [Lightweight Fetch] 給 L2 用。只抓 Info 和 Tags，不解析詳細 Schema。
+        """
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    return f"Module: {name} (Status: {resp.status_code})"
+
+                spec = resp.json()
+                info = spec.get("info", {})
+                title = info.get("title", name)
+                desc = info.get("description", "")
+                tags = spec.get("tags", [])
+
+                summary = [f"Module: {name} ({title})"]
+                if desc:
+                    summary.append(f"Description: {desc}")
+
+                if tags:
+                    summary.append("Capabilities (Controllers):")
+                    for tag in tags:
+                        t_name = tag.get("name")
+                        t_desc = tag.get("description", "")
+                        if t_name:
+                            summary.append(f"  - {t_name}: {t_desc}")
+
+                return "\n".join(summary)
+        except Exception as e:
+            return f"Module: {name} (Offline: {e})"
+
     async def load(self) -> None:
         """從後端載入 Swagger JSON"""
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=config.HTTP_TIMEOUT) as client:
             resp = await client.get(self.swagger_url)
             resp.raise_for_status()
             self._raw = resp.json()
@@ -96,14 +221,21 @@ class SwaggerParser:
 
         # 這樣就算是輸入參數有巢狀物件 (例如 List<DTO>)，也能完整展開給 LLM 看
         resolved_schema = self._deep_resolve(schema, swagger, seen_refs=set())
+        # --- 關鍵過濾：移除 pageNum 和 pageSize ---
+        properties = resolved_schema.get("properties", {})
+        filtered_properties = {
+            k: v for k, v in properties.items() if k not in ["pageNum", "pageSize"]
+        }
+        resolved_schema["properties"] = filtered_properties
+        required = resolved_schema.get("required", [])
+        filtered_required = [r for r in required if r not in ["pageNum", "pageSize"]]
+        resolved_schema["required"] = filtered_required
 
         return {
             "required": body.get("required", False),
             "schema": resolved_schema,
-            "properties": resolved_schema.get("properties", {}),
-            "required_fields": resolved_schema.get(
-                "required", []
-            ),  # 注意：required 通常在 schema 內層
+            "properties": filtered_properties,
+            "required_fields": filtered_required,  # 注意：required 通常在 schema 內層
         }
 
     def _deep_resolve(self, schema: dict, swagger: dict, seen_refs: set) -> dict:

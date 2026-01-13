@@ -11,6 +11,12 @@ from enum import Enum
 # 1. Error Codes (唯一區分業務邏輯的地方)
 # ==========================================
 class ErrorCode(Enum):
+    # --- L2 Planning Layer ---
+    PLAN_EMPTY = "PLAN_EMPTY"  # Planner 沒產出任務
+    INVALID_MODULE = "INVALID_MODULE"  # 指定了不存在的 module
+    SYNTHESIS_FAILED = "SYNTHESIS_FAILED"  # 整合結果失敗
+    ALL_TASKS_FAILED = "ALL_TASKS_FAILED"  # 所有子任務都失敗
+
     # --- Planning Layer (Step 1) ---
     PLAN_NO_API_MATCH = "PLAN_NO_API_MATCH"  # 找不到適合的 API
     PLAN_LOW_CONFIDENCE = "PLAN_LOW_CONFIDENCE"  # 信心不足

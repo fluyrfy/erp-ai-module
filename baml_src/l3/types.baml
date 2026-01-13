@@ -54,7 +54,7 @@ class HttpRequest {
   body string @description("Request body as JSON string or POST/PUT body. Use '{}' for empty string for GET/DELETE")
   headers map<string, string> @description("Additional headers if needed")
   // fetch_strategy FetchStrategy @description("Analyze user intent: is this a specific lookup (SINGLE) or a statistical/global query (ALL)?")
-  aggregation_field string? @description("If fetch_strategy is ALL_PAGES and user asks for statistics (e.g. 'most common surname'), specify the field name to count (e.g. 'lastName'). Otherwise null.")
+  aggregation_field string? @description("If user asks for statistics (e.g. 'most common surname'), specify the field name to count (e.g. 'lastName'). Otherwise null.")
 }
 
 // Generic Summary Output
