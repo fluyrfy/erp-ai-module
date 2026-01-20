@@ -84,41 +84,10 @@ class DependencyMissingError(AgentException):
         )
 
 
-# ==========================================
-# 3. Transfer Objects (給外部/前端回傳用)
-# ==========================================
-@dataclass
-class AgentError:
-    """最終輸出的錯誤結構 (不可變數據)"""
-
-    code: ErrorCode
-    message: str
-    details: dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def from_exception(cls, e: AgentException) -> "AgentError":
-        return cls(code=e.code, message=e.message, details=e.details)
-
-    def to_dict(self) -> dict:
-        return {
-            "code": self.code.value,
-            "message": self.message,
-            "details": self.details,
-        }
-
-
-@dataclass
-class AgentResult:
-    """Agent 的最終回傳結果 (Success or Fail)"""
-
-    success: bool
-    data: Any = None
-    error: Optional[AgentError] = None
-
-    @classmethod
-    def ok(cls, data: Any) -> "AgentResult":
-        return cls(success=True, data=data)
-
-    @classmethod
-    def fail(cls, error: AgentError) -> "AgentResult":
-        return cls(success=False, error=error)
+class PayloadGenerationError(AgentException):
+    def __init__(self, call_id: str, api_id: str, reason: str):
+        super().__init__(
+            code=ErrorCode.GEN_INVALID_SCHEMA,
+            message=f"Payload generation failed for call '{call_id}' ({api_id}): {reason}",
+            details={"call_id": call_id, "api_id": api_id},
+        )

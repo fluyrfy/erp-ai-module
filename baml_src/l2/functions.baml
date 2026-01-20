@@ -4,76 +4,52 @@
 
 function PlanExecution(
   user_query: string,
-  available_modules: string[]
+  available_modules: string[],
+  sys_context: string
 ) -> ExecutionPlan {
   client GPT4o
   prompt #"
     You are an Expert Task Planner.
     Break down User Query into executable tasks for Worker Agent.
 
+    {{ sys_context }}
+
+    === USER QUERY ===
+    {{ user_query }}
+
     === AVAILABLE MODULES ===
     {{ available_modules }}
 
     === PLANNING RULES ===
-    1. Each task must have clear action_required in business terms.
-    2. search_criteria should contain concrete key-value filters.
-    3. All tasks will execute in PARALLEL, do NOT assume sequential dependency.
-    4. If query is simple, output only 1 task. Do not over-decompose.
-    5. output_goal should specify what data fields are needed.
-
-    === EXAMPLES ===
-
-    User: "研發部有多少人？"
-    {
-      "thought_process": "User wants headcount of R&D department. Need to query employees filtered by department name.",
-      "tasks": [
-        {
-          "task_id": "T1",
-          "action_required": "Query employee count in R&D department",
-          "search_criteria": { "department": "研發部" },
-          "output_goal": "Get total employee count"
-        }
-      ],
-      "final_answer_hint": "Report the headcount number directly"
-    }
-
-    User: "比較研發部和業務部的人數"
-    {
-      "thought_process": "User wants to compare headcount between two departments. Need two parallel queries.",
-      "tasks": [
-        {
-          "task_id": "T1",
-          "action_required": "Query employee count in R&D department",
-          "search_criteria": { "department": "研發部" },
-          "output_goal": "Get R&D headcount"
-        },
-        {
-          "task_id": "T2",
-          "action_required": "Query employee count in Sales department",
-          "search_criteria": { "department": "業務部" },
-          "output_goal": "Get Sales headcount"
-        }
-      ],
-      "final_answer_hint": "Compare the two numbers and present which is larger"
-    }
+    - **Module-Based Decomposition**: Split tasks ONLY when data resides in different modules. Do NOT split steps within the same module.
+    - **Action Clarity**: Define 'action_required' as a high-level business goal, not a low-level API step.
+    - **Output Goal**: Clearly specify the final data needed.
+    - **VERBATIM FILTER VALUES (MANDATORY)**:
+      - All values in 'search_criteria' MUST be copied verbatim from the USER QUERY (exact substring, same script, same casing).
+      - Do NOT translate, paraphrase, normalize, or internationalize user-provided filter values.
+      - If a needed filter value is not explicitly present in the USER QUERY, omit that key from 'search_criteria'.
+    - **LANGUAGE CONSISTENCY (MANDATORY)**:
+      - Keep task text and filters in the same language as USER QUERY.
+      - Do not invent English labels for entities or departments.
 
     === YOUR TASK ===
-    User Query: {{ user_query }}
-
     {{ ctx.output_format }}
   "#
 }
 
 // Synthesizer - 整合多個 L3 結果
-function SynthesizeResults(
+function GenerateBriefing(
   user_query: string,
   plan: ExecutionPlan,
   task_results: string,
-) -> Synthesis {
+  sys_context: string
+) -> Briefing {
   client GPT4o
   prompt #"
-    You are an Expert Analyst (L2).
+    You are an Expert Analyst.
     Synthesize multiple task results into a coherent answer.
+
+    {{ sys_context }}
 
     === ORIGINAL QUERY ===
     {{ user_query }}
@@ -85,11 +61,38 @@ function SynthesizeResults(
     === TASK RESULTS ===
     {{ task_results }}
 
-    === RULES ===
-    1. If all tasks succeeded, synthesize a comprehensive answer.
-    2. If some tasks failed, acknowledge the gaps and answer with available data.
-    3. If all tasks failed, explain what went wrong.
-    4. Be concise and directly answer the user's question.
+    === INSTRUCTIONS ===
+    1. **InsightMetadata:**
+       - Analyze the execution status strictly.
+       - Extract key entities that might be needed for *follow-up actions*.
+       - Keep `key_points` factual and dense.
+
+    2. **NarrativeMetadata (For User Display):**
+       - **answer**: 
+         - Provide a concise, professional executive summary in the user's language.
+         - Focus on the "So What?" (the conclusion).
+         - Refer to the attachment if one is generated.
+
+       - **data_attachment**:
+         - **PHILOSOPHY**: "Show, Don't Just Tell." Proactively visualize complex information.
+         - **VISUALIZATION LOGIC (Meta-Rules)**:
+           Analyze the *topology* and *dimensionality* of the `Raw Results`:
+           1. **Multidimensional / Comparative Data**:
+              - IF data has rows and columns (e.g., entities with attributes, statistics).
+              - ACTION: Project into a **Markdown Table**.
+           2. **Sequential / Temporal / Process Data**:
+              - IF data implies a sequence, a workflow, a lifecycle, or dependency steps.
+              - ACTION: Project into a **Mermaid Flowchart** or **Sequence Diagram**.
+           3. **Hierarchical / Relational Data**:
+              - IF data represents trees, ownership structures, or nested categories.
+              - ACTION: Project into a **Mermaid Class Diagram**, **Mindmap**, or **Nested List**.
+           4. **Technical / Code Data**:
+              - IF data is raw code, snippets, or configuration.
+              - ACTION: Project into a **Code Block**.
+         - **TRIGGER**:
+           - Do NOT wait for an explicit user request.
+           - IF the data structure implies a visualization reduces cognitive load compared to plain text, YOU MUST generate it.
+           - Only return `null` if the result is a singular scalar value (e.g., "Success", "Count: 0").
 
     {{ ctx.output_format }}
   "#

@@ -3,27 +3,237 @@ HTTP utilities for L3 Agent
 """
 
 import asyncio
+from dataclasses import dataclass
 import json
+import time
 import httpx
-from typing import Any
-
-from baml_client.types import HttpRequest
+from typing import Any, Dict, Optional
 
 
 class HttpRequestError(Exception):
-    """HTTP 請求失敗"""
+    """
+    Output type:
+      - status_code: int | None
+      - payload: dict | Any | None
+    """
 
-    def __init__(self, status_code: int | None, message: str, details: dict = None):
-        self.status_code = status_code
-        self.message = message
-        self.details = details or {}
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        payload: Optional[Any] = None,
+    ):
         super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.payload = payload
 
 
 class HttpTimeoutError(HttpRequestError):
     """HTTP 請求超時"""
 
     pass
+
+
+@dataclass
+class HttpClientConfig:
+    base_url: str
+    timeout_s: float = 10.0
+    retries: int = 0
+    retry_backoff_s: float = 0.3
+
+
+class HttpClient:
+    """
+    Output type:
+      - success: dict response
+      - error: raise HttpRequestError | HttpTimeoutError
+    """
+
+    def __init__(self, cfg: HttpClientConfig):
+        self.cfg = cfg
+
+    def _build_headers(
+        self, token: Optional[str], extra_headers: Optional[Dict[str, str]] = None
+    ) -> Dict[str, str]:
+        headers: Dict[str, str] = {"Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if extra_headers:
+            headers.update(extra_headers)
+        return headers
+
+    async def request(
+        self,
+        *,
+        method: str,
+        path: str,
+        query_params: Optional[Dict[str, Any]] = None,
+        body: Optional[str] = None,
+        token: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        method = method.upper()
+        url = self.cfg.base_url.rstrip("/") + "/" + path.lstrip("/")
+
+        req_headers = self._build_headers(token, headers)
+        if body is not None and not self._has_header(req_headers, "Content-Type"):
+            req_headers["Content-Type"] = "application/json"
+
+        attempt = 0
+        last_err: Optional[Exception] = None
+
+        while attempt <= self.cfg.retries:
+            attempt += 1
+            t0 = time.time()
+            try:
+                async with httpx.AsyncClient(timeout=self.cfg.timeout_s) as client:
+                    resp = await client.request(
+                        method=method,
+                        url=url,
+                        params=query_params or None,
+                        content=body if body is not None else None,
+                        headers=req_headers,
+                    )
+
+                duration_ms = int((time.time() - t0) * 1000)
+
+                # 非 2xx：丟 HttpRequestError（帶上 payload/狀態碼）
+                if resp.status_code < 200 or resp.status_code >= 300:
+                    payload = None
+                    try:
+                        payload = resp.json()
+                    except Exception:
+                        payload = resp.text
+
+                    raise HttpRequestError(
+                        f"HTTP {resp.status_code}",
+                        status_code=resp.status_code,
+                        payload={
+                            "status": "error",
+                            "code": "HTTP_STATUS_ERROR",
+                            "message": f"HTTP {resp.status_code}",
+                            "meta": {
+                                "method": method,
+                                "path": path,
+                                "url": url,
+                                "duration_ms": duration_ms,
+                            },
+                            "raw": payload,
+                        },
+                    )
+
+                # 2xx：嘗試 json
+                try:
+                    data = resp.json()
+                except Exception:
+                    raise HttpRequestError(
+                        "Invalid JSON response",
+                        status_code=resp.status_code,
+                        payload={
+                            "status": "error",
+                            "code": "INVALID_JSON",
+                            "message": "Response is not valid JSON",
+                            "meta": {
+                                "method": method,
+                                "path": path,
+                                "url": url,
+                                "duration_ms": duration_ms,
+                            },
+                            "raw": resp.text,
+                        },
+                    )
+
+                # 附上 meta（可觀測）
+                if isinstance(data, dict):
+                    data.setdefault("_meta", {})
+                    data["_meta"].update(
+                        {
+                            "method": method,
+                            "path": path,
+                            "url": url,
+                            "duration_ms": duration_ms,
+                        }
+                    )
+                return data
+
+            except httpx.TimeoutException as e:
+                last_err = e
+                if attempt > self.cfg.retries:
+                    raise HttpTimeoutError(
+                        f"Timeout after {self.cfg.timeout_s}s"
+                    ) from e
+
+            except HttpRequestError as e:
+                last_err = e
+                # status error 通常不重試（你可加白名單：502/503/504 才重試）
+                raise
+
+            except Exception as e:
+                last_err = e
+                if attempt > self.cfg.retries:
+                    raise HttpRequestError(
+                        "Unknown HTTP error",
+                        payload={
+                            "status": "error",
+                            "code": "HTTP_UNKNOWN",
+                            "message": str(e),
+                        },
+                    ) from e
+
+            # backoff
+            if attempt <= self.cfg.retries:
+                await self._sleep(self.cfg.retry_backoff_s * attempt)
+
+        # 理論上不會到這
+        raise HttpRequestError(
+            "HTTP failed",
+            payload={
+                "status": "error",
+                "code": "HTTP_FAILED",
+                "message": str(last_err),
+            },
+        )
+
+    async def _sleep(self, seconds: float) -> None:
+        import asyncio
+
+        await asyncio.sleep(seconds)
+
+    def _has_header(self, headers: Dict[str, str], key: str) -> bool:
+        """Output type: bool"""
+        key_l = key.lower()
+        return any(k.lower() == key_l for k in headers.keys())
+
+
+def to_error_payload(
+    e: Exception, *, method: str, path: str, query: Any, body: Any
+) -> Dict[str, Any]:
+    """
+    Output type: dict (normalized error payload)
+    """
+    if isinstance(e, HttpRequestError) and isinstance(e.payload, dict):
+        payload = e.payload
+        payload.setdefault("meta", {})
+        payload["meta"].update(
+            {"method": method, "path": path, "query": query, "body": body}
+        )
+        return payload
+
+    if isinstance(e, HttpTimeoutError):
+        return {
+            "status": "error",
+            "code": "HTTP_TIMEOUT",
+            "message": e.message,
+            "meta": {"method": method, "path": path, "query": query, "body": body},
+        }
+
+    return {
+        "status": "error",
+        "code": "HTTP_ERROR",
+        "message": str(e),
+        "meta": {"method": method, "path": path, "query": query, "body": body},
+    }
 
 
 def parse_body(body_str: str) -> dict | None:
@@ -54,194 +264,3 @@ def parse_body(body_str: str) -> dict | None:
     except json.JSONDecodeError as e:
         print(f"[Warning] Invalid JSON body: {body_str[:100]}... Error: {e}")
         return None
-
-
-async def execute_http_request(
-    base_url: str,
-    method: str,
-    path: str,
-    query_params: dict[str, str] | None = None,
-    body: str = "",
-    headers: dict[str, str] | None = None,
-    timeout: float = 30.0,
-) -> dict[str, Any]:
-    """
-    Execute HTTP request to backend service
-
-    Returns:
-        Response data as dict
-
-    Raises:
-        HttpTimeoutError: Request timeout
-        HttpRequestError: HTTP error or other failures
-    """
-    body_data = parse_body(body)
-
-    try:
-        async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
-            response = await client.request(
-                method=method.upper(),
-                url=path,
-                params=query_params if query_params else None,
-                json=body_data,
-                headers=headers,
-            )
-            response.raise_for_status()
-            return response.json()
-
-    except httpx.TimeoutException:
-        raise HttpTimeoutError(
-            status_code=None,
-            message=f"Request timeout after {timeout}s",
-            details={"path": path, "method": method},
-        )
-    except httpx.HTTPStatusError as e:
-        raise HttpRequestError(
-            status_code=e.response.status_code,
-            message=f"HTTP {e.response.status_code}: {e.response.text[:200]}",
-            details={"path": path, "method": method},
-        )
-    except Exception as e:
-        raise HttpRequestError(
-            status_code=None,
-            message=str(e),
-            details={"path": path, "method": method},
-        )
-
-
-async def execute_multiple_requests(
-    base_url: str,
-    api_requests: list[tuple[str, HttpRequest]],  # (api_id, http_request)
-    sequential: bool = False,
-    timeout: float = 30.0,
-) -> dict[str, dict]:
-    """
-    Execute multiple HTTP requests with support for parallel and sequential modes.
-
-    Args:
-        base_url: Backend base URL
-        api_requests: List of (api_id, HttpRequest) tuples
-        sequential: If True, execute in order (for dependencies); if False, execute in parallel
-        timeout: Timeout per request in seconds
-
-    Returns:
-        Dictionary mapping api_id to response data
-
-    Raises:
-        HttpRequestError: If any request fails
-    """
-    all_responses = {}
-
-    async def _execute_one(api_id: str, http_req: HttpRequest):
-        resp_data = await execute_http_request(
-            base_url=base_url,
-            method=http_req.method,
-            path=http_req.path,
-            query_params=http_req.query_params or {},
-            body=http_req.body,
-            headers=http_req.headers or {},
-            timeout=timeout,
-        )
-        return api_id, resp_data
-
-    if sequential:
-        for api_id, http_req in api_requests:
-            api_id, resp_data = await _execute_one(api_id, http_req)
-            all_responses[api_id] = resp_data
-    else:
-        tasks = [_execute_one(api_id, http_req) for api_id, http_req in api_requests]
-        results = await asyncio.gather(*tasks)
-        for api_id, resp_data in results:
-            all_responses[api_id] = resp_data
-
-    return all_responses
-
-
-# async def execute_with_pagination(
-#     http_request: HttpRequest,
-#     base_url: str,
-#     page_size: int = 100,
-#     max_pages: int = 50,
-# ) -> dict[str, Any]:
-#     """
-#     自動分頁獲取器：當策略為 ALL_PAGES 時，自動跑迴圈把所有資料撈回來。
-#     Raises:
-#         HttpRequestError: 請求失敗
-#     """
-#     print(f"🔄 [Auto-Pagination] Strategy: ALL_PAGES triggered for {http_request.path}")
-
-#     # 1. 準備 Request Body (強制設定較大的 PageSize)
-#     try:
-#         body_json = json.loads(http_request.body) if http_request.body else {}
-#     except:
-#         body_json = {}
-
-#     # 只有 POST 且是列表查詢類型的 API 才需要處理分頁參數
-#     if http_request.method == "POST":
-#         # 覆寫 AI 可能給的小數字，設定一個較大但安全的數字 (例如 100)
-#         body_json["pageSize"] = page_size
-#         body_json["pageNum"] = 1
-
-#     all_records = []
-#     total_count = 0
-#     current_page = 1
-
-#     while True:
-#         # 2. 更新當前頁碼
-#         if http_request.method == "POST":
-#             body_json["pageNum"] = current_page
-#             current_body = json.dumps(body_json)
-#         else:
-#             # GET 方法暫略，使用原始 body
-#             current_body = http_request.body
-
-#         # 3. 執行單次請求
-#         response = await execute_http_request(
-#             base_url=base_url,
-#             method=http_request.method,
-#             path=http_request.path,
-#             query_params=http_request.query_params,
-#             body=current_body,
-#         )
-
-#         # 4. 解析標準回應結構
-#         data_block = response.get("data", {})
-#         if not isinstance(data_block, dict):
-#             # 結構不對，可能不是分頁 API，直接回傳單頁結果
-#             return response
-
-#         records = data_block.get("records", [])
-
-#         # 第一次請求時，獲取總筆數
-#         if current_page == 1:
-#             total_count = data_block.get("count", 0)
-#             print(f"📊 [Auto-Pagination] Target Total: {total_count} records.")
-
-#         if not records:
-#             break
-
-#         all_records.extend(records)
-#         print(
-#             f"   -> Page {current_page} fetched: {len(records)} items. (Total: {len(all_records)}/{total_count})"
-#         )
-
-#         # 5. 終止條件檢查
-#         if len(all_records) >= total_count:
-#             print("✅ [Auto-Pagination] Complete.")
-#             break
-
-#         if current_page >= max_pages:
-#             print(
-#                 f"⚠️ [Auto-Pagination] Safety limit reached ({max_pages} pages). Stopping."
-#             )
-#             break
-
-#         current_page += 1
-
-#     # 6. 構造最終的合併回應
-#     final_response = {
-#         "code": 200,
-#         "message": "Auto-Pagination Completed",
-#         "data": {"records": all_records, "count": len(all_records)},
-#     }
-#     return final_response

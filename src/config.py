@@ -18,9 +18,13 @@ class Config:
     SWAGGER_DOC_PATH = "/v3/api-docs"
 
     # Agent Settings
-    # DEFAULT_LANGUAGE = "Traditional Chinese"
+    DEFAULT_LANGUAGE = "Traditional Chinese"
     CONFIDENCE_THRESHOLD = 0.6
-    HTTP_TIMEOUT = 30.0
+
+    # HTTP
+    HTTP_TIMEOUT_S = 30.0
+    HTTP_RETRIES = 0
+    HTTP_RETRY_BACKOFF_S = 0.3
 
     # Output Formatting
     JSON_INDENT = 2  # 設定 JSON 縮排，預設為 2，設為 0 或 None 則為 minified json

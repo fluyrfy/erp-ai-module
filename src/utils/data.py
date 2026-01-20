@@ -2,8 +2,9 @@
 Data utilities
 """
 
+from collections import Counter
 import re
-from typing import Any
+from typing import Any, Dict, List
 
 from jsonpath_ng.ext import parse as ext_parse
 
@@ -75,3 +76,64 @@ def extract_value(data: Any, path: str) -> Any:
     except Exception as e:
         print(f"⚠️ JSONPath Parsing Error: {e} | Path: {path}")
         return None
+
+
+def aggregate_records(
+    records: List[Dict[str, Any]],
+    target_field: str,
+) -> List[Dict[str, Any]]:
+    """
+    Output type: list[dict[str, Any]]
+    回傳 bucket records，讓上層沿用同一套 records truncate。
+    """
+    if not records or not target_field:
+        return records
+
+    values = [str(r.get(target_field, "Unknown")) for r in records]
+    counts = Counter(values)
+
+    # count desc
+    items = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+
+    return [
+        {"_group_field": target_field, "_group_value": k, "_count": v} for k, v in items
+    ]
+
+
+def sort_records(
+    records: List[Dict[str, Any]],
+    sort_field: str,
+    order: str = "ASC",
+) -> List[Dict[str, Any]]:
+    """
+    Output type: list[dict[str, Any]]
+    """
+    if not records or not sort_field:
+        return records
+
+    order = (order or "ASC").upper()
+    reverse = order == "DESC"
+
+    def sort_key(r: Dict[str, Any]):
+        v = r.get(sort_field, None)
+
+        # None / 空字串：統一排最後（不論 ASC/DESC）
+        if v is None or v == "":
+            return (1, "")
+
+        # number
+        if isinstance(v, (int, float)):
+            return (0, float(v))
+
+        # numeric string -> float
+        if isinstance(v, str):
+            s = v.strip()
+            try:
+                return (0, float(s))
+            except Exception:
+                return (0, s.lower())
+
+        # fallback
+        return (0, str(v).lower())
+
+    return sorted(records, key=sort_key, reverse=reverse)
