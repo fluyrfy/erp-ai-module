@@ -144,7 +144,7 @@ class SwaggerParser:
 
     async def load(self) -> None:
         """從後端載入 Swagger JSON"""
-        async with httpx.AsyncClient(timeout=config.HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=config.HTTP_TIMEOUT_S) as client:
             resp = await client.get(self.swagger_url)
             resp.raise_for_status()
             self._raw = resp.json()
