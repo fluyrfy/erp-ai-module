@@ -6,6 +6,8 @@ import json
 import httpx
 from typing import Any, Dict, List
 
+import urllib
+
 from src.config import config
 
 
@@ -28,7 +30,7 @@ class SwaggerParser:
         """
         base = config.BACKEND_BASE_URL.rstrip("/")
         doc_path = config.SWAGGER_DOC_PATH.rstrip("/")
-        return f"{base}{doc_path}/{module_name.lower()}"
+        return f"{base}{doc_path}/{module_name}"
 
     @staticmethod
     def build_config_url() -> str:
@@ -114,6 +116,11 @@ class SwaggerParser:
         """
         [Lightweight Fetch] 給 L2 用。只抓 Info 和 Tags，不解析詳細 Schema。
         """
+        parsed = urllib.parse.urlparse(url)
+        encoded_path = urllib.parse.quote(parsed.path, safe="/:")
+        safe_url = parsed._replace(path=encoded_path).geturl()
+
+        print(f"[DEBUG] Fetching: {safe_url}")
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(url)

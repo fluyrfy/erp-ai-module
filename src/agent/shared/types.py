@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
+from baml_client.types import DecisionMetadata
 from src.agent.shared.errors import AgentException, ErrorCode
 
 
@@ -31,23 +32,25 @@ class StreamChunk(BaseModel):
 
         Args:
             source_obj: 包含 decision 屬性的物件 (例如 ApiChoice)
-            content: (選填) 如果想覆蓋預設的 action 文字，可傳入此參數。
+            content: (選填) 如果想覆蓋預設的 summary title 文字，可傳入此參數。
                      例如傳入 "POST /api/search" 覆蓋原本的 action。
         """
         # 安全取得 decision (防呆)
-        decision = getattr(source_obj, "decision", None)
+        decision: DecisionMetadata = getattr(source_obj, "decision", None)
 
-        # 1. 決定 Content (優先用傳入的 override，沒有就用 decision.action，再沒有就顯示未知)
-        final_content = content or (decision.action if decision else "Processing")
+        # 1. 決定 Content (優先用傳入的 override，沒有就用 decision.summary.title，再沒有就顯示未知)
+        final_content = content or (
+            decision.summary.title if decision else "Processing"
+        )
 
         # 2. 決定 Reason & Confidence
-        reason = decision.reason if decision else ""
+        description = decision.summary.description if decision else ""
         confidence = getattr(decision, "confidence", None) if decision else None
 
         return cls(
             type=ChunkType.THOUGHT,
             content=final_content,
-            meta={"reason": reason, "confidence": confidence},
+            meta={"description": description, "confidence": confidence},
         )
 
 

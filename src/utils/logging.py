@@ -234,6 +234,15 @@ def traced(
                         span.record_exception(e)
                     raise
 
+                finally:
+                    # ⭐ 安全 detach
+                    try:
+                        if span:
+                            span.end()
+                    except ValueError:
+                        # Context 已經在其他地方被 detach，忽略
+                        pass
+
         # 根據函數類型返回對應的 wrapper
         if inspect.isasyncgenfunction(func):
             return async_generator_wrapper  # async generator

@@ -43,11 +43,12 @@ import time
 # BAML client (generated)
 from baml_client import b
 from src.swagger_parser import SwaggerParser
-from src.utils.bamler import stream_decision
+from src.utils.bamler import stream_summary
 from src.utils.data import aggregate_records, extract_value, sort_records
 from src.utils.http import (
     HttpClient,
     HttpClientConfig,
+    HttpError,
     HttpRequestError,
     HttpTimeoutError,
     to_error_payload,
@@ -162,7 +163,7 @@ class L3Agent:
                 AgentError(
                     code=ErrorCode.LOW_CONFIDENCE,
                     message=f"Overall lack of confidence（{selection.decision.confidence:.2f}）, unable to provide a reliable answer",
-                    details={"reasoning": selection.decision.reason},
+                    details={"reasoning": selection.decision.description},
                 )
             )
             return
@@ -325,13 +326,15 @@ class L3Agent:
                         query_params=final_query,
                         body=final_body,
                     )
-                except (HttpRequestError, HttpTimeoutError) as e:
-                    err_payload = to_error_payload(
-                        e, method=method, path=path, query=final_query, body=final_body
+                except HttpError as e:
+                    yield AgentResult.fail(
+                        AgentError(
+                            code=ErrorCode.EXEC_HTTP_ERROR,
+                            message=e.message,
+                            details={"status_code": e.status_code, "data": e.data},
+                        )
                     )
-                    execution_buffer[api_choice.call_id] = err_payload
-                    summary_buffer[api_choice.call_id] = err_payload
-                    continue
+                    return
 
                 if response is None:
                     err_payload = {
@@ -435,7 +438,11 @@ class L3Agent:
         # ─────────────────────────────────────────────────────────
         try:
             api_response = json.dumps(summary_buffer, ensure_ascii=False)
-            summary = self._generate_summary(task, api_response)
+            async for item in self._generate_summary(task, api_response):
+                if isinstance(item, StreamChunk):
+                    yield item
+                else:
+                    summary = item
         except Exception as e:
             yield AgentResult.fail(
                 AgentError(
@@ -452,12 +459,13 @@ class L3Agent:
 
     # === Tool Method ===
     @traced
-    def _generate_summary(self, task, api_response):
-        summary = b.GenerateSummary(
+    async def _generate_summary(self, task, api_response):
+        stream = b.stream.GenerateSummary(
             task=task,
             api_response=api_response,
         )
-        return summary
+        async for item in stream_summary(stream):
+            yield item
 
     @traced
     async def _select_api(self, task, api_doc, postprocess_doc):
@@ -467,7 +475,7 @@ class L3Agent:
             module_context=f"This is the {self.module_name} module.",
             postprocess_doc=postprocess_doc,
         )
-        async for item in stream_decision(stream):
+        async for item in stream_summary(stream):
             yield item
 
     def _resolve_dependencies(

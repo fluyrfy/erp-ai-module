@@ -8,6 +8,28 @@ import json
 import time
 import httpx
 from typing import Any, Dict, Optional
+from src.context import request_token
+
+
+@dataclass
+class HttpResult:
+    """統一回傳結構，不拋異常"""
+
+    ok: bool
+    status_code: int  # 直接給前端
+    data: Any = None  # 成功時的 response body
+    message: str = ""  # 錯誤訊息
+    duration_ms: int = 0
+
+
+class HttpError(Exception):
+    """統一的 HTTP 錯誤，帶 status_code"""
+
+    def __init__(self, status_code: int, message: str, data: Any = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+        self.data = data
 
 
 class HttpRequestError(Exception):
@@ -53,16 +75,6 @@ class HttpClient:
     def __init__(self, cfg: HttpClientConfig):
         self.cfg = cfg
 
-    def _build_headers(
-        self, token: Optional[str], extra_headers: Optional[Dict[str, str]] = None
-    ) -> Dict[str, str]:
-        headers: Dict[str, str] = {"Accept": "application/json"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        if extra_headers:
-            headers.update(extra_headers)
-        return headers
-
     async def request(
         self,
         *,
@@ -74,126 +86,55 @@ class HttpClient:
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         method = method.upper()
-        url = self.cfg.base_url.rstrip("/") + "/" + path.lstrip("/")
+        url = f"{self.cfg.base_url.rstrip('/')}/{path.lstrip('/')}"
 
-        req_headers = self._build_headers(token, headers)
-        if body is not None and not self._has_header(req_headers, "Content-Type"):
-            req_headers["Content-Type"] = "application/json"
+        headers = headers or {}
 
-        attempt = 0
-        last_err: Optional[Exception] = None
+        token = request_token.get()
+        if token:
+            headers["yuntek-auth"] = token
 
-        while attempt <= self.cfg.retries:
-            attempt += 1
-            t0 = time.time()
+        if body and "content-type" not in {k.lower() for k in headers}:
+            headers["Content-Type"] = "application/json"
+
+        for attempt in range(1, self.cfg.retries + 2):  # 1 ~ retries+1
+
             try:
                 async with httpx.AsyncClient(timeout=self.cfg.timeout_s) as client:
                     resp = await client.request(
                         method=method,
                         url=url,
-                        params=query_params or None,
-                        content=body if body is not None else None,
-                        headers=req_headers,
+                        params=query_params,
+                        content=body,
+                        headers=headers,
                     )
 
-                duration_ms = int((time.time() - t0) * 1000)
-
-                # 非 2xx：丟 HttpRequestError（帶上 payload/狀態碼）
-                if resp.status_code < 200 or resp.status_code >= 300:
-                    payload = None
-                    try:
-                        payload = resp.json()
-                    except Exception:
-                        payload = resp.text
-
-                    raise HttpRequestError(
-                        f"HTTP {resp.status_code}",
-                        status_code=resp.status_code,
-                        payload={
-                            "status": "error",
-                            "code": "HTTP_STATUS_ERROR",
-                            "message": f"HTTP {resp.status_code}",
-                            "meta": {
-                                "method": method,
-                                "path": path,
-                                "url": url,
-                                "duration_ms": duration_ms,
-                            },
-                            "raw": payload,
-                        },
-                    )
-
-                # 2xx：嘗試 json
+                # 統一處理：不管 2xx 還是 4xx/5xx 都走這
                 try:
                     data = resp.json()
                 except Exception:
-                    raise HttpRequestError(
-                        "Invalid JSON response",
-                        status_code=resp.status_code,
-                        payload={
-                            "status": "error",
-                            "code": "INVALID_JSON",
-                            "message": "Response is not valid JSON",
-                            "meta": {
-                                "method": method,
-                                "path": path,
-                                "url": url,
-                                "duration_ms": duration_ms,
-                            },
-                            "raw": resp.text,
-                        },
-                    )
+                    data = {"raw": resp.text}
 
-                # 附上 meta（可觀測）
-                if isinstance(data, dict):
-                    data.setdefault("_meta", {})
-                    data["_meta"].update(
-                        {
-                            "method": method,
-                            "path": path,
-                            "url": url,
-                            "duration_ms": duration_ms,
-                        }
-                    )
+                if not resp.is_success:
+                    raise HttpError(resp.status_code, f"HTTP {resp.status_code}", data)
+
                 return data
 
-            except httpx.TimeoutException as e:
-                last_err = e
+            except httpx.TimeoutException:
                 if attempt > self.cfg.retries:
-                    raise HttpTimeoutError(
-                        f"Timeout after {self.cfg.timeout_s}s"
-                    ) from e
+                    raise HttpError(408, f"Timeout after {self.cfg.timeout_s}s")
 
-            except HttpRequestError as e:
-                last_err = e
-                # status error 通常不重試（你可加白名單：502/503/504 才重試）
+            except HttpError:
                 raise
 
             except Exception as e:
-                last_err = e
                 if attempt > self.cfg.retries:
-                    raise HttpRequestError(
-                        "Unknown HTTP error",
-                        payload={
-                            "status": "error",
-                            "code": "HTTP_UNKNOWN",
-                            "message": str(e),
-                        },
-                    ) from e
+                    raise HttpError(0, str(e))
 
-            # backoff
-            if attempt <= self.cfg.retries:
-                await self._sleep(self.cfg.retry_backoff_s * attempt)
+            # Backoff
+            await asyncio.sleep(self.cfg.retry_backoff_s * attempt)
 
-        # 理論上不會到這
-        raise HttpRequestError(
-            "HTTP failed",
-            payload={
-                "status": "error",
-                "code": "HTTP_FAILED",
-                "message": str(last_err),
-            },
-        )
+        raise HttpError(0, "Unexpected error")
 
     async def _sleep(self, seconds: float) -> None:
         import asyncio

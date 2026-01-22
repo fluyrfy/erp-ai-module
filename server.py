@@ -19,24 +19,27 @@ Endpoints:
 import json
 import asyncio
 from datetime import datetime
-from typing import Any, AsyncGenerator
+from typing import Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import FastAPI, Header, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from baml_client.types import Briefing
 from src.agent.l2 import L2Agent
-from src.agent.shared.types import AgentResult, ChunkType, StreamChunk, StreamDone
+from src.agent.shared.errors import ErrorCode
+from src.agent.shared.types import (
+    AgentError,
+    AgentResult,
+    StreamChunk,
+)
+from src.context import request_token
+from src.config import config
 
 # ═══════════════════════════════════════════════════════════════════
 # Configuration
 # ═══════════════════════════════════════════════════════════════════
-
-API_KEY_HEADER = "x-api-key"
-VALID_API_KEYS = {"dev-key-123", "test-key-456"}  # TODO: Move to env/database
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -75,14 +78,48 @@ class ChatEvent(BaseModel):
 
     # 工廠方法：快速建立 Error 事件
     @classmethod
-    def error(cls, message: str):
-        return cls(event="error", data={"message": message})
+    def error(
+        cls,
+        error: AgentError | None = None,
+        *,
+        code: str = None,
+        message: str = None,
+        status_code: int = None,
+    ):
+        """
+        兩種用法：
+        1. ChatEvent.error(agent_error)  ← 從 AgentResult 來
+        2. ChatEvent.error(code="INTERNAL_ERROR", message="...")  ← Server 層自己的錯誤
+        """
+        if error:
+            # 從 AgentError 提取
+            http_data = error.details.get("data", {}) if error.details else {}
+            return cls(
+                event="error",
+                data={
+                    "code": error.code.value,
+                    "message": http_data.get("message") or error.message,
+                    "status_code": (
+                        error.details.get("status_code") if error.details else None
+                    ),
+                },
+            )
+
+        # 直接用參數
+        return cls(
+            event="error",
+            data={
+                "code": code or "UNKNOWN_ERROR",
+                "message": message or "Unknown error",
+                "status_code": status_code,
+            },
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Agent Integration
 # ═══════════════════════════════════════════════════════════════════
-async def workflow(message: str, conversation_id: str | None = None):
+async def workflow(message: str):
     try:
         l2_agent = L2Agent()
 
@@ -99,9 +136,9 @@ async def workflow(message: str, conversation_id: str | None = None):
                     yield ChatEvent.done(event.data)
                 else:
                     #  失敗：發送 error (原本這裡被當成 done 發出去了)
-                    yield ChatEvent.error(f"Agent Logic Failed: {event.error.message}")
+                    yield ChatEvent.error(event.error)
     except Exception as e:
-        yield ChatEvent.error(f"Server Internal Error: {str(e)}")
+        yield ChatEvent.error(code="INTERNAL_ERROR", message=str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -135,6 +172,16 @@ app.add_middleware(
 )
 
 
+def get_token(authorization: str | None = Header(None)) -> str | None:
+    if not authorization:
+        return None
+    return (
+        authorization.replace("Bearer ", "")
+        if authorization.startswith("Bearer ")
+        else None
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────
@@ -151,14 +198,18 @@ async def health_check():
 
 
 @app.post("/api/chat")
-async def chat(request: ChatRequest):  # api_key: str = Depends(verify_api_key)
+async def chat(
+    request: ChatRequest, token: str | None = Depends(get_token)
+):  # api_key: str = Depends(verify_api_key)
     """
     Chat endpoint with SSE streaming response.
     """
+    token = config.BACKEND_API_KEY
+    request_token.set(token)
 
     async def generate_sse():
         # 呼叫邏輯層
-        async for chat_event in workflow(request.message, request.conversation_id):
+        async for chat_event in workflow(request.message):
 
             yield chat_event.to_sse_string()
 

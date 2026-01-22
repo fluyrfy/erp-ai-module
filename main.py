@@ -24,7 +24,7 @@ print("SelectApi is coroutine function:", inspect.iscoroutinefunction(b.SelectAp
 setup_tracing(service_name="erp-ai-module")
 tracer = trace.get_tracer(__name__)
 
-DEFAULT_QUERY = "目前有哪些部門。"
+DEFAULT_QUERY = "目前有哪些職位"
 
 
 def pretty_print_result(data):

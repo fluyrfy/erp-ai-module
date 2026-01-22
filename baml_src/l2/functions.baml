@@ -4,7 +4,7 @@
 
 function PlanExecution(
   user_query: string,
-  available_modules: string[],
+  available_modules: string,
   sys_context: string
 ) -> ExecutionPlan {
   client GPT4o
@@ -22,12 +22,20 @@ function PlanExecution(
 
     === PLANNING RULES ===
     - **Module-Based Decomposition**: Split tasks ONLY when data resides in different modules. Do NOT split steps within the same module.
+
     - **Action Clarity**: Define 'action_required' as a high-level business goal, not a low-level API step.
+
     - **Output Goal**: Clearly specify the final data needed.
+
+    - **MODULE SELECTION (MANDATORY)**:
+      - For 'module_id', use the integer 'module_id' value (e.g., 0, 1, 2).
+      - Do NOT use module name string.
+
     - **VERBATIM FILTER VALUES (MANDATORY)**:
       - All values in 'search_criteria' MUST be copied verbatim from the USER QUERY (exact substring, same script, same casing).
       - Do NOT translate, paraphrase, normalize, or internationalize user-provided filter values.
       - If a needed filter value is not explicitly present in the USER QUERY, omit that key from 'search_criteria'.
+
     - **LANGUAGE CONSISTENCY (MANDATORY)**:
       - Keep task text and filters in the same language as USER QUERY.
       - Do not invent English labels for entities or departments.

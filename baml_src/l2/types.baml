@@ -6,7 +6,7 @@
 class Task {
   task_id string @description("Task ID for reference, e.g., T1, T2")
 
-  target_module string @description("Target module")
+  module_id int @description("Module ID (integer) from available_modules list")
   
   action_required string @description("What needs to be done in business terms")
   

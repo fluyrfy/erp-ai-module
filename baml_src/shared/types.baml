@@ -2,15 +2,22 @@
 // Shared Types (Reusable)
 // ===============================
 
+// 顯示共用
+class SummaryMeta {
+  title string @description("A short, 3-5 word title describing this thinking step.")
+  description string @description("Detailed explanation")
+}
 // 決策類共用
 class DecisionMetadata {
-  action string @description("A short, 3-5 word title describing this thinking step.")
+  summary SummaryMeta @description("Detailed rationale for why this decision was made")
   confidence float @description("Confidence level 0.0-1.0")
-  reason string @description("Detailed rationale for why this decision was made")
 }
 
 // 洞察類共用
 class InsightMetadata {
+  // === 摘要 === 
+  summary SummaryMeta @description("Human-readable summary of what was discovered")
+
   // === 身份描述 === 
   // 決定要載入哪個分析模組
   data_type string @description("Domain classification in snake_case")
@@ -38,8 +45,17 @@ class NarrativeMetadata {
 }
 
 class DataAttachment {
-  // 增加 'mermaid', 'code' 等類型，讓前端決定渲染器
-  format string @description("Visual format: 'markdown_table', 'mermaid_flowchart', 'mermaid_class', 'mermaid_sequence', 'list', 'code_block'")
-  content string @description("The raw markdown or code content")
-  record_count int? @description("Optional count if applicable")
+  format string @description(#"
+    The fundamental structural category of the information.
+    Derived from the logical topology and dimensionality of the raw data.
+    Acts as a high-level hint for the rendering engine to select the appropriate visualization container.
+  "#)
+  content string @description(#"
+    The raw, render-ready payload.
+    FORMATTING PROTOCOL:
+    - For syntax-sensitive formats (e.g., Mermaid, PlantUML), content MUST be wrapped in markdown code fences with language tag.
+    - Use ASCII-safe identifiers for node/class names; non-ASCII text should be placed in label syntax (e.g., ["顯示名稱"]).
+    - Avoid empty structural bodies or redundant syntax.
+    - For unstructured archetypes, return raw text.
+  "#)
 }

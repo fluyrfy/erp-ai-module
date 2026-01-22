@@ -11,7 +11,7 @@ class HasDecision(Protocol):
     def decision(self) -> Any: ...
 
 
-async def stream_decision(stream: Any) -> AsyncGenerator[Union[StreamChunk, Any], None]:
+async def stream_summary(stream: Any) -> AsyncGenerator[Union[StreamChunk, Any], None]:
     """
     通用函式：將 BAML 的同步串流轉換為 StreamChunk + Final Result 的異步串流。
 
@@ -22,45 +22,53 @@ async def stream_decision(stream: Any) -> AsyncGenerator[Union[StreamChunk, Any]
         StreamChunk: 思考過程
         Any: 最終的 BAML Result 物件
     """
-    last_action = ""
-    last_reason_len = 0
+    last_title = ""
+    last_desc_len = 0
 
     # 1. 處理串流過程 (Thought)
     for partial in stream:
         # 防呆：確保有 decision 欄位
-        if not hasattr(partial, "decision") or not partial.decision:
+        summary = None
+        confidence = None
+
+        if hasattr(partial, "decision") and partial.decision:
+            summary = getattr(partial.decision, "summary", None)
+            confidence = getattr(partial.decision, "confidence", None)
+        elif hasattr(partial, "insight") and partial.insight:
+            summary = getattr(partial.insight, "summary", None)
+
+        if not summary:
             continue
 
-        current_action = partial.decision.action or ""
-        current_reason = partial.decision.reason or ""
+        title = summary.title or ""
+        desc = summary.description or ""
 
-        # 情況 A: Action 變更 -> 發送新步驟
-        if current_action and current_action != last_action:
-            last_action = current_action
-            last_reason_len = len(current_reason)
-            if current_reason.strip():
+        # 情況 A: title 變更 -> 發送新步驟
+        if title and title != last_title:
+            last_title = title
+            last_desc_len = len(desc)
+            if desc.strip():
                 yield StreamChunk(
                     type=ChunkType.THOUGHT,
-                    content=current_action,
+                    content=title,
                     meta={
-                        "reason": current_reason,
-                        "confidence": partial.decision.confidence,
+                        "description": desc,
+                        "confidence": confidence,
                     },
                 )
 
-        # 情況 B: Action 沒變，Reason 變長 -> 更新詳細內容
-        elif len(current_reason) > last_reason_len:
+        # 情況 B: title 沒變，description 變長 -> 更新詳細內容
+        elif len(desc) > last_desc_len:
             yield StreamChunk(
                 type=ChunkType.THOUGHT,
-                content=current_action,
+                content=title,
                 meta={
-                    "reason": current_reason,
-                    "confidence": partial.decision.confidence,
+                    "description": desc,
+                    "confidence": confidence,
                 },
             )
-            last_reason_len = len(current_reason)
+            last_desc_len = len(desc)
 
     # 2. 處理最終結果
     # 注意：這裡不需要 await，因為 baml stream 是同步的
-    final_result = stream.get_final_response()
-    yield final_result
+    yield stream.get_final_response()

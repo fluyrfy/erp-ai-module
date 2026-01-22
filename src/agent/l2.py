@@ -24,7 +24,7 @@ from src.agent.l3 import L3Agent
 from baml_client import b
 from baml_client.types import Briefing, Task
 from src.swagger_parser import SwaggerParser
-from src.utils.bamler import stream_decision
+from src.utils.bamler import stream_summary
 from src.utils.logging import traced
 
 
@@ -32,7 +32,8 @@ class L2Agent:
     """L2 Orchestrator: Plan → Parallel Execute → Synthesize"""
 
     def __init__(self):
-        self.available_modules: list[str] = []
+        # self.available_modules: list[str] = []
+        self.modules: list[dict] = []
 
     @traced
     async def query(
@@ -57,10 +58,10 @@ class L2Agent:
 
         try:
             # 1. 執行掃描 (如果失敗會直接拋出 Exception)
-            module_names, tools_data_list = await self._scan_active_modules()
+            modules, modules_for_llm = await self._scan_active_modules()
 
             # 2. 更新 self，供 Step 2 驗證使用
-            self.available_modules = module_names
+            self.modules = modules
 
         except Exception as e:
             # 🔥 如果連總表都拿不到，L2 直接停工
@@ -83,7 +84,7 @@ class L2Agent:
             # plan = await self._plan_execution(user_query, tools_data_list, sys_context)
             # 🔥 呼叫新的串流 Planning
             async for item in self._plan_execution(
-                user_query, tools_data_list, sys_context
+                user_query, modules_for_llm, sys_context
             ):
                 if isinstance(item, StreamChunk):
                     yield item
@@ -112,7 +113,7 @@ class L2Agent:
 
         for task in plan.tasks:
             print(
-                f"         - {task.task_id}: [{task.target_module}] {task.action_required}"
+                f"         - {task.task_id}: [{task.module_id}] {task.action_required}"
             )
 
         # ─────────────────────────────────────────────────────────
@@ -124,6 +125,10 @@ class L2Agent:
             if isinstance(item, StreamChunk):
                 # 這是 L3 傳上來的思考過程 -> 繼續往外丟給前端
                 yield item
+            elif isinstance(item, AgentResult):
+                # L3 失敗，直接往外傳
+                yield item
+                return
             else:
                 # 這不是 Chunk，那就是最後 yield 出來的 results dict
                 results = item
@@ -229,18 +234,21 @@ class L2Agent:
 
     @traced
     async def _plan_execution(
-        self, user_query, tools, sys_context
+        self, user_query, modules, sys_context
     ) -> AsyncGenerator[Union[StreamChunk, Any], None]:
+        modules_json = json.dumps(
+            modules, ensure_ascii=False, indent=config.JSON_INDENT
+        )
         stream = b.stream.PlanExecution(
             user_query=user_query,
-            available_modules=tools,
+            available_modules=modules_json,
             sys_context=sys_context,
         )
-        async for item in stream_decision(stream):
+        async for item in stream_summary(stream):
             yield item
 
     @traced
-    async def _scan_active_modules(self) -> tuple[list[str], list[dict]]:
+    async def _scan_active_modules(self) -> tuple[list[dict], list[dict]]:
         """
         1. 回傳 module_names (List) 給程式邏輯驗證用
         2. 回傳 modules_metadata (List) 給 LLM 閱讀用
@@ -255,19 +263,29 @@ class L2Agent:
                 "No modules discovered from backend (swagger-config returned empty or failed)."
             )
 
-        # 2. 提取純名單 (這就是你要的 List，可以用 not in)
+        # 2. 提取純名單
         # 結果範例: ["HR", "Inventory", "Finance"]
-        module_names = [m["name"] for m in modules_discovery]
+        # module_names = [m["name"] for m in modules_discovery]
 
         # 3. 平行抓取詳細說明 (這是給 LLM 的長字串)
-        tasks = []
-        for mod in modules_discovery:
-            tasks.append(SwaggerParser.fetch_module_metadata(mod["name"], mod["url"]))
+        tasks = [
+            SwaggerParser.fetch_module_metadata(mod["name"], mod["url"])
+            for mod in modules_discovery
+        ]
+        metadata_results = await asyncio.gather(*tasks)
 
-        results = await asyncio.gather(*tasks)
-        modules_metadata = [r for r in results if r is not None]
+        # 組裝結果
+        modules = []
+        modules_for_llm = []
 
-        return module_names, modules_metadata
+        for idx, (mod, metadata) in enumerate(zip(modules_discovery, metadata_results)):
+            modules.append({"name": mod["name"], "url": mod["url"]})
+
+            modules_for_llm.append(
+                {"module_id": idx, "name": mod["name"], "metadata": metadata or ""}
+            )
+
+        return modules, modules_for_llm
 
     @traced
     async def _execute_tasks_parallel(
@@ -284,25 +302,28 @@ class L2Agent:
             """Run one L3 task and return (task_id, result)"""
             try:
                 # Validate module
-                target_module_norm = task.target_module.lower().strip()
-                available_modules_norm = [m.lower() for m in self.available_modules]
-                if target_module_norm not in available_modules_norm:
+                module_id = task.module_id
+                if module_id < 0 or module_id >= len(self.modules):
                     results[task.task_id] = AgentResult.fail(
                         AgentError(
                             code=ErrorCode.INVALID_MODULE,
-                            message=f"Unknown module: {task.target_module}",
+                            message=f"Invalid module ID: {module_id}",
                         )
                     )
                     return
+                module_name = self.modules[module_id]["name"]
 
                 # Create L3 agent for target module
-                l3Agent = L3Agent(module_name=target_module_norm)
+                l3Agent = L3Agent(module_name=module_name)
                 async for item in l3Agent.execute(task):
                     if isinstance(item, StreamChunk):
                         # 這是思考過程 -> 丟進 queue 給外面
-                        # item.content = f"[{task.target_module}] {item.content}"
                         await queue.put(item)
                     elif isinstance(item, AgentResult):
+                        if not item.success:
+                            # 失敗直接往外拋，不收集
+                            await queue.put(item)
+                            return
                         # 這是結果 -> 寫入 results
                         results[task.task_id] = item
                         print(
@@ -330,6 +351,10 @@ class L2Agent:
             item = await queue.get()
             if item is None:
                 finished_count += 1
+            elif isinstance(item, AgentResult) and not item.success:
+                # 收到錯誤，直接往外 yield 並結束
+                yield item
+                return
             else:
                 yield item
 
